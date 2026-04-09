@@ -1,0 +1,39 @@
+app:
+  name: server-v2
+  host: 0.0.0.0
+  ports:
+    tcp_port: 9000
+    tcp_tls_port: 9443
+    http_port: 8080
+    https_port: 8443
+    ws_port: 8080
+    wss_port: 8443
+  output_ports:
+    tcp_port: 9000
+    tcp_tls_port: 9443
+    http_port: 8080
+    https_port: 8443
+    ws_port: 8080
+    wss_port: 8443
+  tls:
+    cert_file: config/certs/server.crt
+    key_file: config/certs/server.key
+
+logger:
+  level: info
+  human_readable: false
+
+postgres:
+  host: postgres
+  port: 5432
+  database: app
+  username: postgres
+  password: postgres
+  ssl_mode: disable
+  connect_timeout_seconds: 5
+
+redis:
+  host: redis
+  port: 6379
+  database: 0
+  password: ""

@@ -1,0 +1,70 @@
+services:
+  app:
+    container_name: server-v2-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      APP_CONFIG_PATH: /app/config/config.yaml
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./config/certs:/app/config/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  postgres:
+    container_name: server-v2-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - backend
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    container_name: server-v2-redis
+    image: redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    networks:
+      - backend
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+networks:
+  backend:
+    name: server-v2-backend
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
