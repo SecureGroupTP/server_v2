@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -25,6 +24,7 @@ import (
 	"server_v2/internal/platform/uuidx"
 	"server_v2/internal/repository/postgres"
 	appserver "server_v2/internal/server"
+	"server_v2/internal/testutil/postgrestest"
 )
 
 func TestHandlerAuthHTTPFlow(t *testing.T) {
@@ -86,6 +86,24 @@ func TestHandlerAuthHTTPFlow(t *testing.T) {
 		t.Fatalf("unexpected event type: %s", solveResponse[1].EventType)
 	}
 
+	blockedResponse := callRPC(t, client, serverURL, privateKey, "getServerConfig", map[string]any{})
+	if len(blockedResponse) != 1 {
+		t.Fatalf("expected one profile-required response, got %d", len(blockedResponse))
+	}
+	if code := extractErrorCode(t, blockedResponse[0].Parameters); code != "profile_required" {
+		t.Fatalf("unexpected profile-required response: %#v", blockedResponse[0].Parameters)
+	}
+
+	updateProfileResponse := callRPC(t, client, serverURL, privateKey, "updateProfile", map[string]any{"displayName": "Alice"})
+	if updateProfileResponse[0].Parameters["updatedAt"] == nil {
+		t.Fatalf("expected profile update response: %#v", updateProfileResponse[0].Parameters)
+	}
+
+	configResponse := callRPC(t, client, serverURL, privateKey, "getServerConfig", map[string]any{})
+	if configResponse[0].Parameters["config"] == nil {
+		t.Fatalf("expected config after profile update: %#v", configResponse[0].Parameters)
+	}
+
 	subscribeRequestID := uuid.New()
 	subscribePayload := rpc.RequestPayload{
 		RequestID: subscribeRequestID,
@@ -124,11 +142,7 @@ func TestHandlerAuthHTTPFlow(t *testing.T) {
 func newHandlerTestClient(t *testing.T) (*http.Client, string) {
 	t.Helper()
 
-	dsn := os.Getenv("TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
-	}
-
+	dsn := postgrestest.DSN(t)
 	store, err := postgres.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -137,10 +151,7 @@ func newHandlerTestClient(t *testing.T) (*http.Client, string) {
 		_ = store.Close()
 	})
 
-	_, err = store.DB().Exec(`TRUNCATE ban_statuses, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE`)
-	if err != nil {
-		t.Fatalf("cleanup tables: %v", err)
-	}
+	postgrestest.AuthTablesOnlyCleanup(t, store)
 
 	repo := postgres.NewAuthRepository(store.DB())
 	clientRepo := postgres.NewClientRepository(store.DB())

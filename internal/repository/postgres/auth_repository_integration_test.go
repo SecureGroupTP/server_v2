@@ -2,22 +2,18 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	domainauth "server_v2/internal/domain/auth"
+	"server_v2/internal/testutil/postgrestest"
 )
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
-	}
-
+	dsn := postgrestest.DSN(t)
 	store, err := Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -30,10 +26,7 @@ func openTestStore(t *testing.T) *Store {
 
 func cleanupTables(t *testing.T, store *Store) {
 	t.Helper()
-	_, err := store.DB().Exec(`TRUNCATE ban_statuses, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE`)
-	if err != nil {
-		t.Fatalf("cleanup tables: %v", err)
-	}
+	postgrestest.CleanupTables(t, store)
 }
 
 func TestAuthRepositoryRoundTrip(t *testing.T) {

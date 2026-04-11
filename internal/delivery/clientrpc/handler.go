@@ -37,10 +37,11 @@ type Handler struct {
 }
 
 type sessionState struct {
-	SessionID       uuid.UUID
-	UserPublicKey   []byte
-	Authenticated   bool
-	SubscriptionIDs []uuid.UUID
+	SessionID        uuid.UUID
+	UserPublicKey    []byte
+	Authenticated    bool
+	ProfileCompleted bool
+	SubscriptionIDs  []uuid.UUID
 }
 
 type connectionSession struct {
@@ -339,6 +340,13 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 		nextState.SessionID = params.SessionID
 		nextState.UserPublicKey = append([]byte(nil), result.UserPublicKey...)
 		nextState.Authenticated = result.IsAuthenticated
+		if result.IsAuthenticated {
+			profileCompleted, err := h.profileCompleted(ctx, result.UserPublicKey)
+			if err != nil {
+				return h.errorResponse(payload.RequestID, err), state, err
+			}
+			nextState.ProfileCompleted = profileCompleted
+		}
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
 			ReplyToRequestID: &payload.RequestID,
@@ -393,6 +401,25 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 		}
 		return h.errorResponse(payload.RequestID, handledErr), state, handledErr
 	}
+}
+
+func (h *Handler) profileCompleted(ctx context.Context, userPublicKey []byte) (bool, error) {
+	if h.clientService == nil {
+		return true, nil
+	}
+	response, err := h.clientService.GetProfile(ctx, userPublicKey)
+	if err != nil {
+		if errors.Is(err, clientapi.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	profile, ok := response["profile"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	displayName, _ := profile["displayName"].(string)
+	return strings.TrimSpace(displayName) != "", nil
 }
 
 func (h *Handler) resolveSigner(ctx context.Context, payload rpc.RequestPayload, state sessionState) ([]byte, error) {
@@ -465,6 +492,8 @@ func mapError(err error) (string, string) {
 		return "forbidden", err.Error()
 	case errors.Is(err, clientapi.ErrConflict):
 		return "conflict", err.Error()
+	case errors.Is(err, clientapi.ErrProfileRequired):
+		return "profile_required", err.Error()
 	case errors.Is(err, domainauth.ErrSessionExpired),
 		errors.Is(err, domainauth.ErrSessionNotAuthenticated):
 		return "unauthenticated", err.Error()

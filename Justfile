@@ -23,7 +23,7 @@ test:
   go test -p 1 ./...
 
 test-integration:
-  TEST_POSTGRES_DSN='postgres://postgres:postgres@127.0.0.1:5432/app?sslmode=disable' go test -p 1 ./... -v
+  go test -p 1 ./... -v
 
 fmt:
   golangci-lint fmt

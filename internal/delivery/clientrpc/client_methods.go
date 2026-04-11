@@ -7,6 +7,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
 
+	clientapi "server_v2/internal/application/clientapi"
 	domainauth "server_v2/internal/domain/auth"
 	"server_v2/internal/domain/rpc"
 )
@@ -18,6 +19,9 @@ func (h *Handler) handleClientAPICall(ctx context.Context, payload rpc.RequestPa
 	if !state.Authenticated {
 		return rpc.ResponsePacket{}, state, domainauth.ErrSessionNotAuthenticated
 	}
+	if !state.ProfileCompleted && payload.RPCCall != "updateProfile" {
+		return rpc.ResponsePacket{}, state, clientapi.ErrProfileRequired
+	}
 
 	params, err := decodeMapParameters(payload.Parameters)
 	if err != nil {
@@ -27,6 +31,9 @@ func (h *Handler) handleClientAPICall(ctx context.Context, payload rpc.RequestPa
 	responseParams, err := h.dispatchClientMethod(ctx, payload.RPCCall, params, state)
 	if err != nil {
 		return rpc.ResponsePacket{}, state, err
+	}
+	if payload.RPCCall == "updateProfile" {
+		state.ProfileCompleted = true
 	}
 	return rpc.ResponsePacket{RequestID: uuid.New(), ReplyToRequestID: &payload.RequestID, EventType: "rpcCallResponse", Parameters: responseParams}, state, nil
 }

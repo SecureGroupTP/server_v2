@@ -77,6 +77,25 @@ func (s *Service) UpdateProfile(ctx context.Context, user []byte, displayName st
 	if err := s.store.UpdateProfile(ctx, user, displayName, avatarHash, bio, now); err != nil {
 		return nil, err
 	}
+	limit := s.cfg.EventBatchSize
+	for offset := 0; ; offset += limit {
+		friends, err := s.store.ListFriends(ctx, user, limit, offset)
+		if err != nil {
+			return nil, err
+		}
+		for _, friend := range friends {
+			_ = s.appendEvent(ctx, friend.FriendPublicKey, "profile.updated", map[string]any{
+				"userPublicKey": user,
+				"displayName":   displayName,
+				"avatarHash":    avatarHash,
+				"bio":           bio,
+				"updatedAt":     now.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if len(friends) < limit {
+			break
+		}
+	}
 	return map[string]any{"updatedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
@@ -693,7 +712,8 @@ func (s *Service) appendEvent(ctx context.Context, user []byte, eventType string
 }
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrForbidden = errors.New("forbidden")
-	ErrConflict  = errors.New("conflict")
+	ErrNotFound        = errors.New("not found")
+	ErrForbidden       = errors.New("forbidden")
+	ErrConflict        = errors.New("conflict")
+	ErrProfileRequired = errors.New("profile must be completed before using this RPC")
 )

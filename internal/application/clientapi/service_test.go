@@ -32,6 +32,7 @@ type storeMock struct {
 	banStatus      BanStatusRecord
 	hasBanStatus   bool
 	profiles       []ProfileRecord
+	friends        []FriendRecord
 }
 
 func (s *storeMock) GetProfile(context.Context, []byte) (ProfileRecord, error) {
@@ -68,7 +69,7 @@ func (s *storeMock) FetchKeyPackages(context.Context, [][]byte, time.Time) ([]Ke
 }
 func (s *storeMock) DeleteKeyPackagesByUserDevice(context.Context, []byte, string) error { return nil }
 func (s *storeMock) ListFriends(context.Context, []byte, int, int) ([]FriendRecord, error) {
-	return nil, nil
+	return s.friends, nil
 }
 func (s *storeMock) RemoveFriend(context.Context, []byte, []byte, time.Time) error { return nil }
 func (s *storeMock) CreateFriendRequest(_ context.Context, request FriendRequestRecord) error {
@@ -206,6 +207,34 @@ func TestServiceSendFriendRequestAppendsEvent(t *testing.T) {
 	}
 	if len(events.events) != 1 {
 		t.Fatalf("expected one event, got %d", len(events.events))
+	}
+}
+
+func TestServiceUpdateProfileAppendsEventsToFriends(t *testing.T) {
+	now := time.Date(2026, 4, 11, 15, 30, 0, 0, time.UTC)
+	friendKey := bytes32(9)
+	store := &storeMock{friends: []FriendRecord{{FriendPublicKey: friendKey}}}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour, EventBatchSize: 100}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.MustParse("33333333-3333-3333-3333-333333333333")}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = service.UpdateProfile(context.Background(), bytes32(1), "Alice Cooper", "", "bio")
+	if err != nil {
+		t.Fatalf("update profile: %v", err)
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("expected one event, got %d", len(events.events))
+	}
+	if events.events[0].EventType != "profile.updated" {
+		t.Fatalf("unexpected event type: %s", events.events[0].EventType)
+	}
+	if string(events.events[0].UserPublicKey) != string(friendKey) {
+		t.Fatalf("unexpected event receiver: %#v", events.events[0].UserPublicKey)
+	}
+	if events.events[0].Payload["displayName"] != "Alice Cooper" {
+		t.Fatalf("unexpected event payload: %#v", events.events[0].Payload)
 	}
 }
 

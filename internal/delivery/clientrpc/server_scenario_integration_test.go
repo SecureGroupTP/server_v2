@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -23,14 +22,11 @@ import (
 	"server_v2/internal/platform/uuidx"
 	"server_v2/internal/repository/postgres"
 	appserver "server_v2/internal/server"
+	"server_v2/internal/testutil/postgrestest"
 )
 
 func TestServerScenarioProfileFriendRoomMessage(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
-	}
-
+	dsn := postgrestest.DSN(t)
 	store, err := postgres.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -38,10 +34,7 @@ func TestServerScenarioProfileFriendRoomMessage(t *testing.T) {
 	defer func() {
 		_ = store.Close()
 	}()
-	_, err = store.DB().Exec(`TRUNCATE ban_statuses, chat_messages, chat_invitations, chat_member_permissions, chat_members, chat_room_states, chat_rooms, friends, friend_requests, key_packages, device_push_tokens, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE`)
-	if err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	postgrestest.CleanupTables(t, store)
 
 	authRepo := postgres.NewAuthRepository(store.DB())
 	clientRepo := postgres.NewClientRepository(store.DB())
@@ -77,6 +70,10 @@ func TestServerScenarioProfileFriendRoomMessage(t *testing.T) {
 	updateResp := callRPC(t, user1Client, server.URL, user1Priv, "updateProfile", map[string]any{"displayName": "Alice", "bio": "hello"})
 	if updateResp[0].Parameters["updatedAt"] == nil {
 		t.Fatalf("expected updatedAt: %#v", updateResp[0].Parameters)
+	}
+	updateUser2Resp := callRPC(t, user2Client, server.URL, user2Priv, "updateProfile", map[string]any{"displayName": "Bob"})
+	if updateUser2Resp[0].Parameters["updatedAt"] == nil {
+		t.Fatalf("expected updatedAt for user2: %#v", updateUser2Resp[0].Parameters)
 	}
 
 	sendReqResp := callRPC(t, user1Client, server.URL, user1Priv, "sendFriendRequest", map[string]any{"receiverPublicKey": user2Pub})
