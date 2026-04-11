@@ -13,6 +13,7 @@ import (
 	"server_v2/internal/config"
 	"server_v2/internal/delivery/clientrpc"
 	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/logging"
 	"server_v2/internal/platform/randombytes"
 	"server_v2/internal/platform/uuidx"
 	"server_v2/internal/repository/postgres"
@@ -24,6 +25,9 @@ const (
 )
 
 func main() {
+	logger := logging.WithSource(logging.NewLogger(os.Stdout, slog.LevelInfo), "server_v2/cmd/server")
+	slog.SetDefault(logger)
+
 	configPath := os.Getenv("APP_CONFIG_PATH")
 	if configPath == "" {
 		configPath = config.DefaultPath
@@ -31,28 +35,28 @@ func main() {
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		slog.Error("failed to load config", "path", configPath, "error", err)
+		logger.Error("failed to load config", "path", configPath, "error", err)
 		os.Exit(1)
 	}
 
-	var slogHandler slog.Handler
-	if cfg.Logger.HumanReadable {
-		slogHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.Logger.SlogLevel()})
-	} else {
-		slogHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.Logger.SlogLevel()})
-	}
-
-	logger := slog.New(slogHandler)
+	logger = logging.WithSource(logging.NewLogger(os.Stdout, cfg.Logger.SlogLevel()), "server_v2/cmd/server")
 	slog.SetDefault(logger)
+	logger.Info(
+		"logger configured",
+		"level", cfg.Logger.Level,
+		"human_readable_requested", cfg.Logger.HumanReadable,
+		"format", "serilog_compact_json",
+	)
 
 	store, err := postgres.Open(context.Background(), cfg.Postgres.DSN())
 	if err != nil {
-		slog.Error("failed to open postgres", "error", err)
+		logger.Error("failed to open postgres", "host", cfg.Postgres.Host, "port", cfg.Postgres.Port, "database", cfg.Postgres.Database, "error", err)
 		os.Exit(1)
 	}
 	defer func() {
 		_ = store.Close()
 	}()
+	logger.Info("postgres connection established", "host", cfg.Postgres.Host, "port", cfg.Postgres.Port, "database", cfg.Postgres.Database)
 
 	authRepository := postgres.NewAuthRepository(store.DB())
 	clientRepository := postgres.NewClientRepository(store.DB())
@@ -72,9 +76,10 @@ func main() {
 		authRepository,
 	)
 	if err != nil {
-		slog.Error("failed to initialize auth service", "error", err)
+		logger.Error("failed to initialize auth service", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("auth service initialized")
 
 	clientService, err := clientapi.NewService(
 		clientapi.Config{
@@ -92,9 +97,10 @@ func main() {
 		authService,
 	)
 	if err != nil {
-		slog.Error("failed to initialize client api service", "error", err)
+		logger.Error("failed to initialize client api service", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("client api service initialized")
 
 	clientHandler := clientrpc.NewHandler(logger, authService, clientService)
 	httpConnectionBinder := appserver.NewHTTPConnectionBinder(clientHandler)
@@ -112,7 +118,7 @@ func main() {
 		}
 	}()
 
-	slog.Info(
+	logger.Info(
 		"server runtime configured",
 		"service", cfg.App.Name,
 		"host", cfg.App.Host,
@@ -130,22 +136,22 @@ func main() {
 
 	select {
 	case runErr := <-runtimeErrCh:
-		slog.Error("runtime failed", "error", runErr)
+		logger.Error("runtime failed", "error", runErr)
 		stop()
 	case <-ctx.Done():
 	}
 
-	slog.Info("shutdown signal received")
+	logger.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if shutdownErr := runtime.Shutdown(shutdownCtx); shutdownErr != nil {
-		slog.Error("graceful shutdown failed", "error", shutdownErr)
+		logger.Error("graceful shutdown failed", "error", shutdownErr)
 		os.Exit(1)
 	}
 
 	// Give in-flight logs a small chance to flush in container runtimes.
 	time.Sleep(100 * time.Millisecond)
-	slog.Info("server stopped")
+	logger.Info("server stopped")
 }

@@ -10,10 +10,9 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	testcontainers "github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const (

@@ -18,6 +18,7 @@ type discoveryResponse struct {
 func (g routeGroup) registerDiscoveryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/discovery/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
+			g.logger.Warn("discovery request rejected", "method", r.Method, "path", r.URL.Path, "reason", "method_not_allowed")
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -36,6 +37,15 @@ func (g routeGroup) registerDiscoveryRoutes(mux *http.ServeMux) {
 			http.Error(w, "failed to encode discovery payload", http.StatusInternalServerError)
 			return
 		}
+		g.logger.Debug(
+			"discovery response encoded",
+			"tcp_port", g.outputPorts.TCPPort,
+			"tcp_tls_port", g.outputPorts.TCPTLSPort,
+			"http_port", g.outputPorts.HTTPPort,
+			"https_port", g.outputPorts.HTTPSPort,
+			"ws_port", g.outputPorts.WSPort,
+			"wss_port", g.outputPorts.WSSPort,
+		)
 
 		w.Header().Set("Content-Type", "application/cbor")
 		w.WriteHeader(http.StatusOK)

@@ -242,5 +242,5 @@ REDIS_PORT=6379
 - Не храни production secrets в `config/config.yaml` внутри репозитория.
 - Для публичного HTTP/WS обычно удобнее TLS termination через Caddy/Nginx/ingress.
 - Для raw TCP оставь прямой порт или используй L4/TCP proxy.
-- Логи управляются секцией `logger`.
+- Логи управляются секцией `logger` и пишутся в Serilog Compact JSON из `guide/LOGS.MD`.
 - TLS listeners автоматически отключаются, если cert/key отсутствуют.

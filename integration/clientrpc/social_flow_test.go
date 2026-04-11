@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"server_v2/internal/delivery/clientrpc"
 	"server_v2/internal/domain/rpc"
 	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/logging"
 	"server_v2/internal/platform/randombytes"
 	"server_v2/internal/platform/uuidx"
 	"server_v2/internal/repository/postgres"
@@ -85,10 +87,34 @@ func TestTCPAndWebSocketSocialFlow(t *testing.T) {
 	if displayName, _ := event.Parameters["displayName"].(string); displayName != "Alice Cooper" {
 		t.Fatalf("expected updated displayName event payload, got %#v", event.Parameters)
 	}
+
+	server.assertLogFormat(t)
+	server.assertLogged(t, "http request completed")
+	server.assertLogged(t, "tcp rpc batch completed")
+	server.assertLogged(t, "websocket rpc batch completed")
+	server.assertLogged(t, "rpc call completed", "rpc_call", "sendFriendRequest")
 }
 
 type testServer struct {
 	baseURL string
+	logs    *testLogSink
+}
+
+type testLogSink struct {
+	mu      sync.Mutex
+	builder strings.Builder
+}
+
+func (s *testLogSink) Write(payload []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.builder.Write(payload)
+}
+
+func (s *testLogSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.builder.String()
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -115,7 +141,8 @@ func newTestServer(t *testing.T) *testServer {
 	}
 
 	ports := testPorts(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logs := &testLogSink{}
+	logger := logging.WithSource(logging.NewLogger(logs, slog.LevelDebug), "integration/clientrpc.social_flow")
 	clientHandler := clientrpc.NewHandler(logger, authService, clientService)
 	httpBinder := appserver.NewHTTPConnectionBinder(clientHandler)
 	httpHandler := appserver.NewHandler(logger, ports, clientHandler)
@@ -155,9 +182,80 @@ func newTestServer(t *testing.T) *testServer {
 
 	server := &testServer{
 		baseURL: "http://127.0.0.1:" + strconv.Itoa(ports.HTTPPort),
+		logs:    logs,
 	}
 	server.waitForDiscovery(t, errCh)
 	return server
+}
+
+func (s *testServer) assertLogFormat(t *testing.T) {
+	t.Helper()
+	events := s.logEvents(t)
+	if len(events) == 0 {
+		t.Fatal("expected integration logs, got none")
+	}
+	for index, event := range events {
+		if event["@t"] == "" {
+			t.Fatalf("log event %d missing @t: %#v", index, event)
+		}
+		if event["@m"] == "" {
+			t.Fatalf("log event %d missing @m: %#v", index, event)
+		}
+		if event["@i"] == "" {
+			t.Fatalf("log event %d missing @i: %#v", index, event)
+		}
+		if event["SourceContext"] == "" {
+			t.Fatalf("log event %d missing SourceContext: %#v", index, event)
+		}
+		if _, ok := event["time"]; ok {
+			t.Fatalf("log event %d uses slog time field instead of @t: %#v", index, event)
+		}
+		if _, ok := event["msg"]; ok {
+			t.Fatalf("log event %d uses slog msg field instead of @m: %#v", index, event)
+		}
+	}
+}
+
+func (s *testServer) assertLogged(t *testing.T, message string, attrs ...string) {
+	t.Helper()
+	if len(attrs)%2 != 0 {
+		t.Fatalf("attrs must be key/value pairs: %#v", attrs)
+	}
+	for _, event := range s.logEvents(t) {
+		if event["@m"] != message {
+			continue
+		}
+		matched := true
+		for i := 0; i < len(attrs); i += 2 {
+			value, ok := event[attrs[i]].(string)
+			if !ok || value != attrs[i+1] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	t.Fatalf("log event %q with attrs %#v not found in logs:\n%s", message, attrs, s.logs.String())
+}
+
+func (s *testServer) logEvents(t *testing.T) []map[string]any {
+	t.Helper()
+	raw := strings.TrimSpace(s.logs.String())
+	if raw == "" {
+		return nil
+	}
+	lines := strings.Split(raw, "\n")
+	events := make([]map[string]any, 0, len(lines))
+	for index, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("log line %d is not json: %q: %v", index, line, err)
+		}
+		events = append(events, event)
+	}
+	return events
 }
 
 func (s *testServer) waitForDiscovery(t *testing.T, errCh <-chan error) {
@@ -294,7 +392,10 @@ type wsRPCClient struct {
 
 func newWSRPCClient(t *testing.T, port int) *wsRPCClient {
 	t.Helper()
-	conn, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/client", nil)
+	conn, resp, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(port)+"/api/v1/client", nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("connect websocket rpc: %v", err)
 	}

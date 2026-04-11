@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"server_v2/internal/config"
+	"server_v2/internal/platform/logging"
 )
 
 const (
@@ -54,44 +55,62 @@ func NewRuntime(
 		handler:              handler,
 		streamHandler:        streamHandler,
 		httpConnectionBinder: httpConnectionBinder,
-		logger:               logger,
+		logger:               logging.WithSource(logger, "server_v2/internal/server.Runtime"),
 		errCh:                make(chan error, 1),
 	}
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
+	r.logger.Info("runtime starting")
 	if err := r.startAll(); err != nil {
+		r.logger.Error("runtime failed to start listeners", "error", err)
 		return err
 	}
+	r.logger.Info("runtime started")
 
 	select {
 	case <-ctx.Done():
+		r.logger.Info("runtime context canceled")
 		return nil
 	case err := <-r.errCh:
+		r.logger.Error("runtime listener failed", "error", err)
 		return err
 	}
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {
+	startedAt := time.Now()
 	r.mu.Lock()
 	httpServers := append([]*http.Server(nil), r.httpServers...)
 	tcpListeners := append([]net.Listener(nil), r.tcpListeners...)
 	r.mu.Unlock()
 
+	r.logger.Info("runtime shutdown started", "tcp_listeners", len(tcpListeners), "http_servers", len(httpServers))
 	var shutdownErr error
 
 	for _, listener := range tcpListeners {
 		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			r.logger.Warn("failed to close tcp listener", "addr", listener.Addr().String(), "error", err)
 			shutdownErr = errors.Join(shutdownErr, err)
+			continue
 		}
+		r.logger.Debug("tcp listener closed", "addr", listener.Addr().String())
 	}
 
 	for _, server := range httpServers {
 		if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			r.logger.Warn("failed to shutdown http server", "addr", server.Addr, "error", err)
 			shutdownErr = errors.Join(shutdownErr, err)
+			continue
 		}
+		r.logger.Debug("http server shutdown completed", "addr", server.Addr)
 	}
 
+	if shutdownErr != nil {
+		r.logger.Error("runtime shutdown completed with errors", "duration_ms", time.Since(startedAt).Milliseconds(), "error", shutdownErr)
+		return shutdownErr
+	}
+	r.logger.Info("runtime shutdown completed", "duration_ms", time.Since(startedAt).Milliseconds())
 	return shutdownErr
 }
 
@@ -147,7 +166,7 @@ func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
 	r.mu.Unlock()
 
 	if withTLS {
-		r.logger.Info("starting HTTPS/WSS listener", "addr", addr)
+		r.logger.Info("starting HTTPS/WSS listener", "addr", addr, "read_timeout", readTimeout.String(), "write_timeout", writeTimeout.String(), "idle_timeout", idleTimeout.String())
 		go func() {
 			err := server.ListenAndServeTLS(r.cfg.TLS.CertFile, r.cfg.TLS.KeyFile)
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -157,7 +176,7 @@ func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
 		return nil
 	}
 
-	r.logger.Info("starting HTTP/WS listener", "addr", addr)
+	r.logger.Info("starting HTTP/WS listener", "addr", addr, "read_timeout", readTimeout.String(), "write_timeout", writeTimeout.String(), "idle_timeout", idleTimeout.String())
 	go func() {
 		err := server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -224,6 +243,7 @@ func (r *Runtime) startTCPListener(port int, withTLS bool) error {
 				return
 			}
 
+			r.logger.Debug("tcp connection accepted", "kind", kind, "local_addr", conn.LocalAddr().String(), "remote_addr", conn.RemoteAddr().String())
 			go r.handleTCPConnection(conn)
 		}
 	}()
@@ -236,6 +256,7 @@ func (r *Runtime) buildTLSConfig() (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load tls cert/key: %w", err)
 	}
+	r.logger.Info("tls certificate loaded", "cert_file", r.cfg.TLS.CertFile, "key_file", r.cfg.TLS.KeyFile, "min_version", "TLS1.2")
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{certificate},
@@ -244,17 +265,22 @@ func (r *Runtime) buildTLSConfig() (*tls.Config, error) {
 }
 
 func (r *Runtime) reportError(err error) {
+	r.logger.Error("runtime error reported", "error", err)
 	select {
 	case r.errCh <- err:
 	default:
+		r.logger.Warn("runtime error dropped because error channel is full", "error", err)
 	}
 }
 
 func (r *Runtime) handleTCPConnection(conn net.Conn) {
+	startedAt := time.Now()
 	defer func() {
 		_ = conn.Close()
+		r.logger.Debug("tcp connection closed", "local_addr", conn.LocalAddr().String(), "remote_addr", conn.RemoteAddr().String(), "duration_ms", time.Since(startedAt).Milliseconds())
 	}()
 	if r.streamHandler == nil {
+		r.logger.Warn("tcp connection closed without stream handler", "remote_addr", conn.RemoteAddr().String())
 		return
 	}
 	if err := r.streamHandler.HandleStream(context.Background(), conn); err != nil && !errors.Is(err, net.ErrClosed) {

@@ -20,6 +20,7 @@ import (
 	clientapi "server_v2/internal/application/clientapi"
 	domainauth "server_v2/internal/domain/auth"
 	"server_v2/internal/domain/rpc"
+	"server_v2/internal/platform/logging"
 	appserver "server_v2/internal/server"
 )
 
@@ -77,7 +78,7 @@ type unsubscribeFromEventsParams struct {
 
 func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service) *Handler {
 	return &Handler{
-		logger:           logger,
+		logger:           logging.WithSource(logger, "server_v2/internal/delivery/clientrpc.Handler"),
 		authService:      authService,
 		clientService:    clientService,
 		httpConnSessions: newHTTPConnectionSessions(),
@@ -122,6 +123,7 @@ func (h *Handler) OnHTTPConnectionClosed(connectionID string) {
 		return
 	}
 	h.httpConnSessions.delete(connectionID)
+	h.logger.Debug("http connection session released", "connection_id", connectionID)
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -129,11 +131,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	if websocket.IsWebSocketUpgrade(r) {
 		h.handleWebSocket(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
+		h.logger.Warn("rpc http request rejected", "method", r.Method, "path", r.URL.Path, "reason", "method_not_allowed")
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -144,12 +148,14 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 	if err != nil {
+		h.logger.Warn("failed to read rpc http body", "path", r.URL.Path, "error", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
 	connectionID, ok := appserver.HTTPConnectionIDFromContext(r.Context())
 	if !ok {
+		h.logger.Error("missing http connection context", "path", r.URL.Path)
 		http.Error(w, "missing http connection context", http.StatusInternalServerError)
 		return
 	}
@@ -161,7 +167,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	scope.mu.Unlock()
 	payload, err := cbor.Marshal(responses)
 	if err != nil {
-		h.logger.Error("failed to encode rpc response", "error", err)
+		h.logger.Error("failed to encode rpc response", "connection_id", connectionID, "response_count", len(responses), "error", err)
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -169,25 +175,41 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(statusCode)
 	_, _ = w.Write(payload)
+	h.logger.Info(
+		"rpc http request completed",
+		"connection_id", connectionID,
+		"request_bytes", len(body),
+		"response_bytes", len(payload),
+		"response_count", len(responses),
+		"status_code", statusCode,
+		"authenticated", nextState.Authenticated,
+		"profile_completed", nextState.ProfileCompleted,
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 }
 
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		h.logger.Warn("websocket upgrade failed", "error", err)
+		h.logger.Warn("websocket upgrade failed", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "error", err)
 		return
 	}
 	defer func() {
 		_ = conn.Close()
+		h.logger.Info("websocket connection closed", "remote_addr", r.RemoteAddr, "duration_ms", time.Since(startedAt).Milliseconds())
 	}()
+	h.logger.Info("websocket connection accepted", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 
 	state := sessionState{}
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
+			h.logger.Debug("websocket read stopped", "remote_addr", r.RemoteAddr, "error", err)
 			return
 		}
 		if messageType != websocket.BinaryMessage {
+			h.logger.Debug("websocket message ignored", "remote_addr", r.RemoteAddr, "message_type", messageType, "reason", "non_binary")
 			continue
 		}
 
@@ -195,20 +217,36 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		state = nextState
 		encoded, err := cbor.Marshal(responses)
 		if err != nil {
-			h.logger.Error("failed to encode websocket rpc response", "error", err)
+			h.logger.Error("failed to encode websocket rpc response", "remote_addr", r.RemoteAddr, "response_count", len(responses), "error", err)
 			return
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := conn.WriteMessage(websocket.BinaryMessage, encoded); err != nil {
+			h.logger.Warn("failed to write websocket rpc response", "remote_addr", r.RemoteAddr, "response_bytes", len(encoded), "error", err)
 			return
 		}
+		h.logger.Info(
+			"websocket rpc batch completed",
+			"remote_addr", r.RemoteAddr,
+			"request_bytes", len(payload),
+			"response_bytes", len(encoded),
+			"response_count", len(responses),
+			"authenticated", state.Authenticated,
+			"profile_completed", state.ProfileCompleted,
+		)
 	}
 }
 
 func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
+	startedAt := time.Now()
 	decoder := cbor.NewDecoder(rw)
 	encoder := cbor.NewEncoder(rw)
 	state := sessionState{}
+	batches := 0
+	h.logger.Info("tcp rpc stream started")
+	defer func() {
+		h.logger.Info("tcp rpc stream stopped", "batch_count", batches, "duration_ms", time.Since(startedAt).Milliseconds())
+	}()
 
 	for {
 		var payload []rpc.RequestPacket
@@ -224,6 +262,14 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 		if err := encoder.Encode(responses); err != nil {
 			return fmt.Errorf("encode stream batch: %w", err)
 		}
+		batches++
+		h.logger.Info(
+			"tcp rpc batch completed",
+			"request_count", len(payload),
+			"response_count", len(responses),
+			"authenticated", state.Authenticated,
+			"profile_completed", state.ProfileCompleted,
+		)
 	}
 }
 
@@ -232,6 +278,7 @@ func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionStat
 	if err := cbor.Unmarshal(raw, &packets); err != nil {
 		var packet rpc.RequestPacket
 		if singleErr := cbor.Unmarshal(raw, &packet); singleErr != nil {
+			h.logger.Warn("invalid rpc cbor payload rejected", "request_bytes", len(raw), "error", singleErr)
 			response := rpc.ResponsePacket{
 				RequestID:  uuid.New(),
 				EventType:  "rpcCallResponse",
@@ -247,14 +294,18 @@ func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionStat
 }
 
 func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket, state sessionState) ([]rpc.ResponsePacket, sessionState, int) {
+	startedAt := time.Now()
 	responses := make([]rpc.ResponsePacket, 0, len(packets)+4)
 	statusCode := http.StatusOK
 	currentState := state
+	errorCount := 0
 
+	h.logger.Debug("rpc batch started", "request_count", len(packets), "authenticated", state.Authenticated, "profile_completed", state.ProfileCompleted)
 	for _, packet := range packets {
 		response, nextState, err := h.handlePacket(ctx, packet, currentState)
 		currentState = nextState
 		if err != nil {
+			errorCount++
 			statusCode = maxStatus(statusCode, http.StatusBadRequest)
 			responses = append(responses, response)
 			continue
@@ -265,7 +316,7 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 	if currentState.Authenticated {
 		events, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: currentState.UserPublicKey})
 		if err != nil {
-			h.logger.Error("failed to pull user events", "error", err)
+			h.logger.Error("failed to pull user events", "session_id", currentState.SessionID.String(), "error", err)
 			statusCode = maxStatus(statusCode, http.StatusInternalServerError)
 			return responses, currentState, statusCode
 		}
@@ -278,23 +329,39 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 				Parameters:       event.Payload,
 			})
 		}
+		h.logger.Debug("user events pulled", "session_id", currentState.SessionID.String(), "event_count", len(events))
 	}
 
+	h.logger.Debug(
+		"rpc batch completed",
+		"request_count", len(packets),
+		"response_count", len(responses),
+		"error_count", errorCount,
+		"status_code", statusCode,
+		"authenticated", currentState.Authenticated,
+		"profile_completed", currentState.ProfileCompleted,
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 	return responses, currentState, statusCode
 }
 
 func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, state sessionState) (rpc.ResponsePacket, sessionState, error) {
+	startedAt := time.Now()
 	payload, err := rpc.DecodePayload(packet.Payload)
 	if err != nil {
+		h.logger.Warn("rpc packet rejected", "reason", "invalid_payload", "error", err)
 		return rpc.ResponsePacket{RequestID: uuid.New(), EventType: "rpcCallResponse", Parameters: errorParameters("bad_request", "invalid payload")}, state, err
 	}
+	h.logger.Debug("rpc call started", "rpc_call", payload.RPCCall, "request_id", payload.RequestID.String(), "authenticated", state.Authenticated, "profile_completed", state.ProfileCompleted)
 
 	nextState := state
 	signer, err := h.resolveSigner(ctx, payload, state)
 	if err != nil {
+		h.logRPCFailure(payload, err, startedAt)
 		return h.errorResponse(payload.RequestID, err), state, err
 	}
 	if len(signer) > 0 && !ed25519.Verify(signer, packet.Payload, packet.Signature) {
+		h.logRPCFailure(payload, domainauth.ErrInvalidSignature, startedAt)
 		return h.errorResponse(payload.RequestID, domainauth.ErrInvalidSignature), state, domainauth.ErrInvalidSignature
 	}
 
@@ -302,6 +369,7 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 	case "requestAuthChallenge":
 		var params requestAuthChallengeParams
 		if err := rpc.DecodeParameters(payload.Parameters, &params); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		result, err := h.authService.RequestAuthChallenge(ctx, appauth.RequestAuthChallengeInput{
@@ -311,10 +379,12 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 			ClientNonce:   params.ClientNonce,
 		})
 		if err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		nextState.SessionID = result.SessionID
 		nextState.UserPublicKey = append([]byte(nil), params.UserPublicKey...)
+		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
 			ReplyToRequestID: &payload.RequestID,
@@ -328,6 +398,7 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 	case "solveAuthChallenge":
 		var params solveAuthChallengeParams
 		if err := rpc.DecodeParameters(payload.Parameters, &params); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		result, err := h.authService.SolveAuthChallenge(ctx, appauth.SolveAuthChallengeInput{
@@ -335,6 +406,7 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 			Signature: params.Signature,
 		})
 		if err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		nextState.SessionID = params.SessionID
@@ -343,10 +415,12 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 		if result.IsAuthenticated {
 			profileCompleted, err := h.profileCompleted(ctx, result.UserPublicKey)
 			if err != nil {
+				h.logRPCFailure(payload, err, startedAt)
 				return h.errorResponse(payload.RequestID, err), state, err
 			}
 			nextState.ProfileCompleted = profileCompleted
 		}
+		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
 			ReplyToRequestID: &payload.RequestID,
@@ -360,14 +434,17 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 	case "subscribeToEvents":
 		var params subscribeToEventsParams
 		if err := rpc.DecodeParameters(payload.Parameters, &params); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		_ = params
 		result, err := h.authService.SubscribeToEvents(ctx, appauth.SubscribeToEventsInput{SessionID: nextState.SessionID})
 		if err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		nextState.SubscriptionIDs = append(nextState.SubscriptionIDs, result.SubscriptionID)
+		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
 			ReplyToRequestID: &payload.RequestID,
@@ -380,12 +457,15 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 	case "unsubscribeFromEvents":
 		var params unsubscribeFromEventsParams
 		if err := rpc.DecodeParameters(payload.Parameters, &params); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
 		result, err := h.authService.UnsubscribeFromEvents(ctx, appauth.UnsubscribeFromEventsInput{SubscriptionID: params.SubscriptionID})
 		if err != nil {
+			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
+		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
 			ReplyToRequestID: &payload.RequestID,
@@ -397,8 +477,10 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 	default:
 		response, responseState, handledErr := h.handleClientAPICall(ctx, payload, nextState)
 		if handledErr == nil {
+			h.logRPCSuccess(payload, responseState, startedAt)
 			return response, responseState, nil
 		}
+		h.logRPCFailure(payload, handledErr, startedAt)
 		return h.errorResponse(payload.RequestID, handledErr), state, handledErr
 	}
 }
@@ -420,6 +502,30 @@ func (h *Handler) profileCompleted(ctx context.Context, userPublicKey []byte) (b
 	}
 	displayName, _ := profile["displayName"].(string)
 	return strings.TrimSpace(displayName) != "", nil
+}
+
+func (h *Handler) logRPCSuccess(payload rpc.RequestPayload, state sessionState, startedAt time.Time) {
+	h.logger.Debug(
+		"rpc call completed",
+		"rpc_call", payload.RPCCall,
+		"request_id", payload.RequestID.String(),
+		"session_id", state.SessionID.String(),
+		"authenticated", state.Authenticated,
+		"profile_completed", state.ProfileCompleted,
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
+}
+
+func (h *Handler) logRPCFailure(payload rpc.RequestPayload, err error, startedAt time.Time) {
+	code, _ := mapError(err)
+	h.logger.Warn(
+		"rpc call failed",
+		"rpc_call", payload.RPCCall,
+		"request_id", payload.RequestID.String(),
+		"error_code", code,
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+		"error", err,
+	)
 }
 
 func (h *Handler) resolveSigner(ctx context.Context, payload rpc.RequestPayload, state sessionState) ([]byte, error) {
