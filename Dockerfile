@@ -4,7 +4,6 @@ ARG GO_VERSION=1.25.0
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 WORKDIR /src
-RUN mkdir -p /src/config/certs
 
 RUN apk add --no-cache ca-certificates tzdata
 
@@ -29,10 +28,9 @@ WORKDIR /app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /out/server /app/server
-COPY --from=builder /src/config/certs /app/config/certs
 
 ENV APP_PORT=8080
-EXPOSE 8080 8443 9000 9443
+EXPOSE 8080 9000
 
 USER nonroot:nonroot
 ENTRYPOINT ["/app/server"]

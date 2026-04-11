@@ -2,16 +2,13 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -115,41 +112,20 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 }
 
 func (r *Runtime) startAll() error {
-	if err := r.startTCPListener(r.cfg.Ports.TCPPort, false); err != nil {
+	if err := r.startTCPListener(r.cfg.Ports.TCPPort); err != nil {
 		return err
 	}
 
 	for _, port := range uniquePorts(r.cfg.Ports.HTTPPort, r.cfg.Ports.WSPort) {
-		if err := r.startHTTPServer(port, false); err != nil {
+		if err := r.startHTTPServer(port); err != nil {
 			return err
 		}
-	}
-
-	tlsReady, reason := r.tlsReady()
-	if tlsReady {
-		if err := r.startTCPListener(r.cfg.Ports.TCPTLSPort, true); err != nil {
-			return err
-		}
-
-		for _, port := range uniquePorts(r.cfg.Ports.HTTPSPort, r.cfg.Ports.WSSPort) {
-			if err := r.startHTTPServer(port, true); err != nil {
-				return err
-			}
-		}
-	} else {
-		r.logger.Warn(
-			"TLS listeners are disabled",
-			"reason", reason,
-			"tcp_tls_port", r.cfg.Ports.TCPTLSPort,
-			"https_port", r.cfg.Ports.HTTPSPort,
-			"wss_port", r.cfg.Ports.WSSPort,
-		)
 	}
 
 	return nil
 }
 
-func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
+func (r *Runtime) startHTTPServer(port int) error {
 	addr := net.JoinHostPort(r.cfg.Host, strconv.Itoa(port))
 	server := &http.Server{
 		Addr:         addr,
@@ -164,17 +140,6 @@ func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
 	r.mu.Lock()
 	r.httpServers = append(r.httpServers, server)
 	r.mu.Unlock()
-
-	if withTLS {
-		r.logger.Info("starting HTTPS/WSS listener", "addr", addr, "read_timeout", readTimeout.String(), "write_timeout", writeTimeout.String(), "idle_timeout", idleTimeout.String())
-		go func() {
-			err := server.ListenAndServeTLS(r.cfg.TLS.CertFile, r.cfg.TLS.KeyFile)
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				r.reportError(fmt.Errorf("https/wss server on %s: %w", addr, err))
-			}
-		}()
-		return nil
-	}
 
 	r.logger.Info("starting HTTP/WS listener", "addr", addr, "read_timeout", readTimeout.String(), "write_timeout", writeTimeout.String(), "idle_timeout", idleTimeout.String())
 	go func() {
@@ -201,23 +166,10 @@ func (r *Runtime) connState(conn net.Conn, state http.ConnState) {
 	r.httpConnectionBinder.ConnState(conn, state)
 }
 
-func (r *Runtime) startTCPListener(port int, withTLS bool) error {
+func (r *Runtime) startTCPListener(port int) error {
 	addr := net.JoinHostPort(r.cfg.Host, strconv.Itoa(port))
 
-	var (
-		listener net.Listener
-		err      error
-	)
-
-	if withTLS {
-		tlsConfig, cfgErr := r.buildTLSConfig()
-		if cfgErr != nil {
-			return cfgErr
-		}
-		listener, err = tls.Listen("tcp", addr, tlsConfig)
-	} else {
-		listener, err = net.Listen("tcp", addr)
-	}
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
@@ -227,9 +179,6 @@ func (r *Runtime) startTCPListener(port int, withTLS bool) error {
 	r.mu.Unlock()
 
 	kind := "TCP"
-	if withTLS {
-		kind = "TCP/TLS"
-	}
 	r.logger.Info("starting listener", "kind", kind, "addr", addr)
 
 	go func() {
@@ -249,19 +198,6 @@ func (r *Runtime) startTCPListener(port int, withTLS bool) error {
 	}()
 
 	return nil
-}
-
-func (r *Runtime) buildTLSConfig() (*tls.Config, error) {
-	certificate, err := tls.LoadX509KeyPair(r.cfg.TLS.CertFile, r.cfg.TLS.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load tls cert/key: %w", err)
-	}
-	r.logger.Info("tls certificate loaded", "cert_file", r.cfg.TLS.CertFile, "key_file", r.cfg.TLS.KeyFile, "min_version", "TLS1.2")
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{certificate},
-		MinVersion:   tls.VersionTLS12,
-	}, nil
 }
 
 func (r *Runtime) reportError(err error) {
@@ -293,28 +229,4 @@ func uniquePorts(first int, second int) []int {
 		return []int{first}
 	}
 	return []int{first, second}
-}
-
-func (r *Runtime) tlsReady() (bool, string) {
-	certPath := strings.TrimSpace(r.cfg.TLS.CertFile)
-	keyPath := strings.TrimSpace(r.cfg.TLS.KeyFile)
-	if certPath == "" || keyPath == "" {
-		return false, "cert_file or key_file is empty"
-	}
-
-	if _, err := os.Stat(certPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, "certificate file does not exist"
-		}
-		return false, fmt.Sprintf("cannot access certificate file: %v", err)
-	}
-
-	if _, err := os.Stat(keyPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, "key file does not exist"
-		}
-		return false, fmt.Sprintf("cannot access key file: %v", err)
-	}
-
-	return true, ""
 }

@@ -40,11 +40,11 @@ func (a AppConfiguration) Validate() error {
 		return fmt.Errorf("app.host is required")
 	}
 
-	if err := a.Ports.Validate("app.ports"); err != nil {
+	if err := a.Ports.ValidateInternal("app.ports"); err != nil {
 		return err
 	}
 
-	if err := a.OutputPorts.Validate("app.output_ports"); err != nil {
+	if err := a.OutputPorts.ValidatePublic("app.output_ports"); err != nil {
 		return err
 	}
 	if a.SessionChallengeTTL <= 0 {
@@ -60,7 +60,7 @@ func (a AppConfiguration) Validate() error {
 	return nil
 }
 
-func (p AppPortsConfiguration) Validate(section string) error {
+func (p AppPortsConfiguration) ValidateInternal(section string) error {
 	if strings.TrimSpace(section) == "" {
 		section = "app.ports"
 	}
@@ -69,24 +69,12 @@ func (p AppPortsConfiguration) Validate(section string) error {
 		return fmt.Errorf("%s.tcp_port must be > 0", section)
 	}
 
-	if p.TCPTLSPort <= 0 {
-		return fmt.Errorf("%s.tcp_tls_port must be > 0", section)
-	}
-
 	if p.HTTPPort <= 0 {
 		return fmt.Errorf("%s.http_port must be > 0", section)
 	}
 
-	if p.HTTPSPort <= 0 {
-		return fmt.Errorf("%s.https_port must be > 0", section)
-	}
-
 	if p.WSPort <= 0 {
 		return fmt.Errorf("%s.ws_port must be > 0", section)
-	}
-
-	if p.WSSPort <= 0 {
-		return fmt.Errorf("%s.wss_port must be > 0", section)
 	}
 
 	duplicates := map[int][]string{}
@@ -95,22 +83,46 @@ func (p AppPortsConfiguration) Validate(section string) error {
 	}
 
 	register(p.TCPPort, "tcp_port")
-	register(p.TCPTLSPort, "tcp_tls_port")
 	register(p.HTTPPort, "http_port")
-	register(p.HTTPSPort, "https_port")
 	register(p.WSPort, "ws_port")
-	register(p.WSSPort, "wss_port")
 
 	for port, names := range duplicates {
 		if len(names) < 2 {
 			continue
 		}
 
-		if isAllowedDuplicate(names, "http_port", "ws_port") || isAllowedDuplicate(names, "https_port", "wss_port") {
+		if isAllowedDuplicate(names, "http_port", "ws_port") {
 			continue
 		}
 
 		return fmt.Errorf("port %d is reused by unsupported combination: %s", port, strings.Join(names, ", "))
+	}
+
+	return nil
+}
+
+func (p AppPortsConfiguration) ValidatePublic(section string) error {
+	if strings.TrimSpace(section) == "" {
+		section = "app.output_ports"
+	}
+
+	if p.TCPPort <= 0 {
+		return fmt.Errorf("%s.tcp_port must be > 0", section)
+	}
+	if p.TCPTLSPort <= 0 {
+		return fmt.Errorf("%s.tcp_tls_port must be > 0", section)
+	}
+	if p.HTTPPort <= 0 {
+		return fmt.Errorf("%s.http_port must be > 0", section)
+	}
+	if p.HTTPSPort <= 0 {
+		return fmt.Errorf("%s.https_port must be > 0", section)
+	}
+	if p.WSPort <= 0 {
+		return fmt.Errorf("%s.ws_port must be > 0", section)
+	}
+	if p.WSSPort <= 0 {
+		return fmt.Errorf("%s.wss_port must be > 0", section)
 	}
 
 	return nil

@@ -25,7 +25,6 @@ services:
       APP_CONFIG_PATH: /app/config/config.yaml
     volumes:
       - ./config/config.yaml:/app/config/config.yaml:ro
-      - ./config/certs:/app/config/certs:ro
     depends_on:
       flyway:
         condition: service_completed_successfully
@@ -35,11 +34,27 @@ services:
         condition: service_healthy
     networks:
       - backend
+    expose:
+      - "8080"
+      - "9000"
+    restart: unless-stopped
+
+  nginx:
+    container_name: server-v2-nginx
+    image: nginx:1.27-alpine
+    depends_on:
+      app:
+        condition: service_started
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/certs:/etc/nginx/certs:ro
+    networks:
+      - backend
     ports:
-      - "${APP_HTTP_PORT:-8080}:8080"
-      - "${APP_HTTPS_PORT:-8443}:8443"
-      - "${APP_TCP_PORT:-9000}:9000"
-      - "${APP_TCP_TLS_PORT:-9443}:9443"
+      - "${NGINX_HTTP_PORT:-80}:8080"
+      - "${NGINX_HTTPS_PORT:-443}:8443"
+      - "${NGINX_TCP_PORT:-834}:9000"
+      - "${NGINX_TCP_TLS_PORT:-9443}:9443"
     restart: unless-stopped
 
   postgres:

@@ -23,14 +23,29 @@ docker-preflight:
 init-config:
     cp -n config/example.config.yaml config/config.yaml
 
-[doc("Create a local self-signed TLS certificate for TCP/TLS, HTTPS, and WSS.")]
+[doc("Overwrite config/config.yaml from the current example template.")]
+refresh-config:
+    cp config/example.config.yaml config/config.yaml
+
+[doc("Create a local self-signed TLS certificate for Nginx.")]
 cert-selfsigned:
     mkdir -p config/certs
-    openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
-      -keyout config/certs/server.key \
-      -out config/certs/server.crt \
-      -subj "/CN=localhost" \
-      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+    if [[ -s config/certs/server.crt && -s config/certs/server.key ]] && openssl x509 -checkend 86400 -noout -in config/certs/server.crt >/dev/null 2>&1; then \
+      echo "config/certs/server.crt and config/certs/server.key already exist"; \
+    else \
+      openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
+        -keyout config/certs/server.key \
+        -out config/certs/server.crt \
+        -subj "/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"; \
+    fi
+
+[doc("Verify the Nginx config syntax in Docker.")]
+nginx-check: docker-preflight cert-selfsigned
+    docker run --rm \
+      -v "$PWD/config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+      -v "$PWD/config/certs:/etc/nginx/certs:ro" \
+      nginx:1.27-alpine nginx -t
 
 [doc("Remove local TLS certificate files.")]
 cert-clean:
@@ -45,8 +60,8 @@ build:
 run:
     go run ./cmd/server
 
-[doc("Start Postgres, Redis, Flyway migrations, and the app through Docker Compose.")]
-up: docker-preflight init-config
+[doc("Start Postgres, Redis, Flyway migrations, app, and Nginx through Docker Compose.")]
+up: docker-preflight init-config cert-selfsigned nginx-check
     docker compose up --build
 
 [doc("Start only infrastructure services and migrations through Docker Compose.")]

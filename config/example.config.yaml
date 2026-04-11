@@ -3,24 +3,18 @@ app:
   host: 0.0.0.0
   ports:
     tcp_port: 9000
-    tcp_tls_port: 9443
     http_port: 8080
-    https_port: 8443
     ws_port: 8080
-    wss_port: 8443
   output_ports:
-    tcp_port: 9000
+    tcp_port: 834
     tcp_tls_port: 9443
-    http_port: 8080
-    https_port: 8443
-    ws_port: 8080
-    wss_port: 8443
+    http_port: 80
+    https_port: 443
+    ws_port: 80
+    wss_port: 443
   session_challenge_ttl: 5m
   event_retention: 24h
   event_batch_size: 100
-  tls:
-    cert_file: config/certs/server.crt
-    key_file: config/certs/server.key
 
 logger:
   level: info
