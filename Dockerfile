@@ -32,7 +32,7 @@ COPY --from=builder /out/server /app/server
 COPY --from=builder /src/config/certs /app/config/certs
 
 ENV APP_PORT=8080
-EXPOSE 8080
+EXPOSE 8080 8443 9000 9443
 
 USER nonroot:nonroot
 ENTRYPOINT ["/app/server"]

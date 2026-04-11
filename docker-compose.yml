@@ -36,7 +36,10 @@ services:
     networks:
       - backend
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_HTTP_PORT:-8080}:8080"
+      - "${APP_HTTPS_PORT:-8443}:8443"
+      - "${APP_TCP_PORT:-9000}:9000"
+      - "${APP_TCP_TLS_PORT:-9443}:9443"
     restart: unless-stopped
 
   postgres:
