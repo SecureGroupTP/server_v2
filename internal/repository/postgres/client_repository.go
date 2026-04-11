@@ -1,0 +1,729 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	clientapi "server_v2/internal/application/clientapi"
+)
+
+type ClientRepository struct {
+	db *sql.DB
+}
+
+func NewClientRepository(db *sql.DB) *ClientRepository {
+	return &ClientRepository{db: db}
+}
+
+func (r *ClientRepository) dbtx(ctx context.Context) dbtx {
+	return currentDBTX(ctx, r.db)
+}
+
+func (r *ClientRepository) GetProfile(ctx context.Context, publicKey []byte) (clientapi.ProfileRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT public_key, COALESCE(username, ''), COALESCE(display_name, ''), COALESCE(bio, ''), COALESCE(avatar_hash, ''),
+       COALESCE(avatar_bytes, ''::bytea), COALESCE(avatar_content_type, ''), last_seen_at, updated_at, deleted_at
+FROM profiles
+WHERE public_key = $1
+`, publicKey)
+	var record clientapi.ProfileRecord
+	if err := row.Scan(&record.PublicKey, &record.Username, &record.DisplayName, &record.Bio, &record.AvatarHash, &record.AvatarBytes, &record.ContentType, &record.LastSeenAt, &record.UpdatedAt, &record.DeletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ProfileRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ProfileRecord{}, fmt.Errorf("get profile: %w", err)
+	}
+	return record, nil
+}
+
+func (r *ClientRepository) GetActiveBanStatus(ctx context.Context, publicKey []byte, now time.Time) (clientapi.BanStatusRecord, bool, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT is_banned, COALESCE(reason, ''), banned_at, expires_at
+FROM ban_statuses
+WHERE public_key = $1
+  AND is_banned = TRUE
+  AND (expires_at IS NULL OR expires_at > $2)
+`, publicKey, now)
+	var record clientapi.BanStatusRecord
+	if err := row.Scan(&record.IsBanned, &record.Reason, &record.BannedAt, &record.ExpiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.BanStatusRecord{}, false, nil
+		}
+		return clientapi.BanStatusRecord{}, false, fmt.Errorf("get active ban status: %w", err)
+	}
+	return record, true, nil
+}
+
+func (r *ClientRepository) UpdateProfile(ctx context.Context, publicKey []byte, displayName string, avatarHash string, bio string, updatedAt time.Time) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO profiles (public_key, display_name, bio, avatar_hash, last_seen_at, created_at, updated_at)
+VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5, $5, $5)
+ON CONFLICT (public_key)
+DO UPDATE SET display_name = NULLIF($2, ''), bio = NULLIF($3, ''), avatar_hash = NULLIF($4, ''), updated_at = $5, deleted_at = NULL
+`, publicKey, displayName, bio, avatarHash, updatedAt)
+	if err != nil {
+		return fmt.Errorf("update profile: %w", err)
+	}
+	return nil
+}
+
+func (r *ClientRepository) SearchProfiles(ctx context.Context, query string, limit int, offset int) ([]clientapi.ProfileRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `
+SELECT public_key, COALESCE(username, ''), COALESCE(display_name, ''), COALESCE(bio, ''), COALESCE(avatar_hash, ''),
+       COALESCE(avatar_bytes, ''::bytea), COALESCE(avatar_content_type, ''), last_seen_at, updated_at, deleted_at
+FROM profiles
+WHERE deleted_at IS NULL AND (
+  POSITION(LOWER($1) IN LOWER(COALESCE(username, ''))) > 0 OR
+  POSITION(LOWER($1) IN LOWER(COALESCE(display_name, ''))) > 0
+)
+ORDER BY updated_at DESC
+LIMIT $2 OFFSET $3
+`, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("search profiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanProfiles(rows)
+}
+
+func (r *ClientRepository) DeleteAccount(ctx context.Context, publicKey []byte, deletedAt time.Time) error {
+	queries := []struct {
+		q    string
+		args []any
+	}{
+		{`UPDATE profiles SET deleted_at = $2, updated_at = $2 WHERE public_key = $1`, []any{publicKey, deletedAt}},
+		{`DELETE FROM device_push_tokens WHERE user_public_key = $1`, []any{publicKey}},
+		{`DELETE FROM key_packages WHERE user_public_key = $1`, []any{publicKey}},
+		{`DELETE FROM friends WHERE user_public_key = $1 OR friend_public_key = $1`, []any{publicKey}},
+		{`DELETE FROM friend_requests WHERE sender_public_key = $1 OR receiver_public_key = $1`, []any{publicKey}},
+		{`UPDATE chat_members SET left_at = $2 WHERE user_public_key = $1 AND left_at IS NULL`, []any{publicKey, deletedAt}},
+		{`DELETE FROM chat_member_permissions WHERE user_public_key = $1`, []any{publicKey}},
+		{`DELETE FROM chat_invitations WHERE inviter_public_key = $1 OR invitee_public_key = $1`, []any{publicKey}},
+	}
+	for _, item := range queries {
+		if _, err := r.dbtx(ctx).ExecContext(ctx, item.q, item.args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ClientRepository) GetProfileAvatar(ctx context.Context, publicKey []byte) (clientapi.AvatarRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COALESCE(avatar_bytes, ''::bytea), COALESCE(avatar_content_type, '') FROM profiles WHERE public_key = $1`, publicKey)
+	var avatar clientapi.AvatarRecord
+	if err := row.Scan(&avatar.Bytes, &avatar.ContentType); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.AvatarRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.AvatarRecord{}, err
+	}
+	return avatar, nil
+}
+
+func (r *ClientRepository) ListDevices(ctx context.Context, userPublicKey []byte) ([]clientapi.DeviceRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT id, session_id, user_public_key, device_id, platform, push_token, is_enabled, updated_at FROM device_push_tokens WHERE user_public_key = $1 ORDER BY updated_at DESC`, userPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.DeviceRecord
+	for rows.Next() {
+		var item clientapi.DeviceRecord
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.UserPublicKey, &item.DeviceID, &item.Platform, &item.PushToken, &item.IsEnabled, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) UpsertDevice(ctx context.Context, device clientapi.DeviceRecord) (clientapi.DeviceRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+INSERT INTO device_push_tokens (id, session_id, user_public_key, device_id, platform, push_token, is_enabled, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (user_public_key, device_id)
+DO UPDATE SET session_id = EXCLUDED.session_id, platform = EXCLUDED.platform, push_token = EXCLUDED.push_token, is_enabled = EXCLUDED.is_enabled, updated_at = EXCLUDED.updated_at
+RETURNING id, session_id, user_public_key, device_id, platform, push_token, is_enabled, updated_at
+`, device.ID, device.SessionID, device.UserPublicKey, device.DeviceID, device.Platform, device.PushToken, device.IsEnabled, device.UpdatedAt)
+	var out clientapi.DeviceRecord
+	if err := row.Scan(&out.ID, &out.SessionID, &out.UserPublicKey, &out.DeviceID, &out.Platform, &out.PushToken, &out.IsEnabled, &out.UpdatedAt); err != nil {
+		return clientapi.DeviceRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) RemoveDevice(ctx context.Context, userPublicKey []byte, deviceID uuid.UUID, removedAt time.Time) error {
+	deviceIdentifier, err := r.lookupDeviceIdentifier(ctx, userPublicKey, deviceID)
+	if err != nil {
+		return err
+	}
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `DELETE FROM device_push_tokens WHERE id = $1 AND user_public_key = $2`, deviceID, userPublicKey); err != nil {
+		return err
+	}
+	return r.DeleteKeyPackagesByUserDevice(ctx, userPublicKey, deviceIdentifier)
+}
+
+func (r *ClientRepository) lookupDeviceIdentifier(ctx context.Context, userPublicKey []byte, deviceID uuid.UUID) (string, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT device_id FROM device_push_tokens WHERE id = $1 AND user_public_key = $2`, deviceID, userPublicKey)
+	var deviceIdentifier string
+	if err := row.Scan(&deviceIdentifier); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", clientapi.ErrNotFound
+		}
+		return "", err
+	}
+	return deviceIdentifier, nil
+}
+
+func (r *ClientRepository) InsertKeyPackages(ctx context.Context, keyPackages []clientapi.KeyPackageRecord) (int, error) {
+	for _, item := range keyPackages {
+		if _, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO key_packages (id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, item.ID, item.UserPublicKey, item.DeviceID, item.KeyPackageBytes, item.IsLastResort, item.CreatedAt, item.ExpiresAt); err != nil {
+			return 0, err
+		}
+	}
+	return len(keyPackages), nil
+}
+
+func (r *ClientRepository) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte, now time.Time) ([]clientapi.KeyPackageRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT DISTINCT ON (user_public_key, device_id) id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at FROM key_packages WHERE user_public_key = ANY($1) AND expires_at > $2 ORDER BY user_public_key, device_id, is_last_resort ASC, created_at ASC`, pqByteaArray(userPublicKeys), now)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.KeyPackageRecord
+	for rows.Next() {
+		var item clientapi.KeyPackageRecord
+		if err := rows.Scan(&item.ID, &item.UserPublicKey, &item.DeviceID, &item.KeyPackageBytes, &item.IsLastResort, &item.CreatedAt, &item.ExpiresAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) DeleteKeyPackagesByUserDevice(ctx context.Context, userPublicKey []byte, deviceID string) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `DELETE FROM key_packages WHERE user_public_key = $1 AND device_id = $2`, userPublicKey, deviceID)
+	return err
+}
+
+func (r *ClientRepository) ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]clientapi.FriendRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT id, user_public_key, friend_public_key, accepted_at FROM friends WHERE user_public_key = $1 ORDER BY accepted_at DESC, id DESC LIMIT $2 OFFSET $3`, userPublicKey, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.FriendRecord
+	for rows.Next() {
+		var item clientapi.FriendRecord
+		if err := rows.Scan(&item.ID, &item.UserPublicKey, &item.FriendPublicKey, &item.AcceptedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) RemoveFriend(ctx context.Context, userPublicKey []byte, friendPublicKey []byte, removedAt time.Time) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `DELETE FROM friends WHERE (user_public_key = $1 AND friend_public_key = $2) OR (user_public_key = $2 AND friend_public_key = $1)`, userPublicKey, friendPublicKey)
+	return err
+}
+
+func (r *ClientRepository) CreateFriendRequest(ctx context.Context, request clientapi.FriendRequestRecord) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO friend_requests (request_id, sender_public_key, receiver_public_key, state, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`, request.RequestID, request.SenderPublicKey, request.ReceiverPublicKey, request.State, request.CreatedAt, request.UpdatedAt)
+	return err
+}
+
+func (r *ClientRepository) UpdateFriendRequestState(ctx context.Context, requestID uuid.UUID, actorPublicKey []byte, allowedFromStates []int16, targetState int16, updatedAt time.Time) (clientapi.FriendRequestRecord, error) {
+	record, err := r.GetFriendRequest(ctx, requestID)
+	if err != nil {
+		return clientapi.FriendRequestRecord{}, err
+	}
+	if string(actorPublicKey) != string(record.SenderPublicKey) && string(actorPublicKey) != string(record.ReceiverPublicKey) {
+		return clientapi.FriendRequestRecord{}, clientapi.ErrForbidden
+	}
+	if !containsState(allowedFromStates, record.State) {
+		return clientapi.FriendRequestRecord{}, clientapi.ErrConflict
+	}
+	row := r.dbtx(ctx).QueryRowContext(ctx, `UPDATE friend_requests SET state = $2, updated_at = $3 WHERE request_id = $1 RETURNING request_id, sender_public_key, receiver_public_key, state, created_at, updated_at`, requestID, targetState, updatedAt)
+	var out clientapi.FriendRequestRecord
+	if err := row.Scan(&out.RequestID, &out.SenderPublicKey, &out.ReceiverPublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		return clientapi.FriendRequestRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) GetFriendRequest(ctx context.Context, requestID uuid.UUID) (clientapi.FriendRequestRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT request_id, sender_public_key, receiver_public_key, state, created_at, updated_at FROM friend_requests WHERE request_id = $1`, requestID)
+	var out clientapi.FriendRequestRecord
+	if err := row.Scan(&out.RequestID, &out.SenderPublicKey, &out.ReceiverPublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.FriendRequestRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.FriendRequestRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) ListFriendRequests(ctx context.Context, userPublicKey []byte, direction string, limit int, offset int) ([]clientapi.FriendRequestRecord, error) {
+	query := `SELECT request_id, sender_public_key, receiver_public_key, state, created_at, updated_at FROM friend_requests WHERE (sender_public_key = $1 OR receiver_public_key = $1) ORDER BY created_at DESC, request_id DESC LIMIT $2 OFFSET $3`
+	switch direction {
+	case "incoming":
+		query = `SELECT request_id, sender_public_key, receiver_public_key, state, created_at, updated_at FROM friend_requests WHERE receiver_public_key = $1 ORDER BY created_at DESC, request_id DESC LIMIT $2 OFFSET $3`
+	case "outgoing":
+		query = `SELECT request_id, sender_public_key, receiver_public_key, state, created_at, updated_at FROM friend_requests WHERE sender_public_key = $1 ORDER BY created_at DESC, request_id DESC LIMIT $2 OFFSET $3`
+	}
+	rows, err := r.dbtx(ctx).QueryContext(ctx, query, userPublicKey, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.FriendRequestRecord
+	for rows.Next() {
+		var item clientapi.FriendRequestRecord
+		if err := rows.Scan(&item.RequestID, &item.SenderPublicKey, &item.ReceiverPublicKey, &item.State, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) CreateFriendPair(ctx context.Context, left clientapi.FriendRecord, right clientapi.FriendRecord) error {
+	for _, item := range []clientapi.FriendRecord{left, right} {
+		if _, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO friends (id, user_public_key, friend_public_key, accepted_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_public_key, friend_public_key) DO NOTHING`, item.ID, item.UserPublicKey, item.FriendPublicKey, item.AcceptedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ClientRepository) CreateRoom(ctx context.Context, room clientapi.ChatRoomRecord, owner clientapi.ChatMemberRecord) error {
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_rooms (room_id, owner_public_key, title, description, visibility, avatar_hash, avatar_bytes, avatar_content_type, state_id, created_at, updated_at) VALUES ($1,$2,$3,NULLIF($4,''),$5,NULLIF($6,''),$7,$8,$9,$10,$11)`, room.RoomID, room.OwnerPublicKey, room.Title, room.Description, room.Visibility, room.AvatarHash, room.AvatarBytes, room.AvatarContentType, room.StateID, room.CreatedAt, room.UpdatedAt); err != nil {
+		return err
+	}
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_members (room_id, user_public_key, role, notification_level, joined_at) VALUES ($1,$2,$3,$4,$5)`, owner.RoomID, owner.UserPublicKey, owner.Role, owner.NotificationLevel, owner.JoinedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *ClientRepository) ListRooms(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]clientapi.ChatRoomRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `
+SELECT r.room_id, r.owner_public_key, r.title, COALESCE(r.description,''), r.visibility, COALESCE(r.avatar_hash,''), COALESCE(r.avatar_bytes,''::bytea), COALESCE(r.avatar_content_type,''), r.state_id, r.created_at, r.updated_at, r.deleted_at
+FROM chat_rooms r
+JOIN chat_members m ON m.room_id = r.room_id AND m.left_at IS NULL
+WHERE m.user_public_key = $1 AND r.deleted_at IS NULL
+ORDER BY r.updated_at DESC, r.room_id DESC LIMIT $2 OFFSET $3
+`, userPublicKey, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanRooms(rows)
+}
+
+func (r *ClientRepository) GetRoom(ctx context.Context, roomID uuid.UUID) (clientapi.ChatRoomRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT room_id, owner_public_key, title, COALESCE(description,''), visibility, COALESCE(avatar_hash,''), COALESCE(avatar_bytes,''::bytea), COALESCE(avatar_content_type,''), state_id, created_at, updated_at, deleted_at FROM chat_rooms WHERE room_id = $1 AND deleted_at IS NULL`, roomID)
+	var out clientapi.ChatRoomRecord
+	if err := row.Scan(&out.RoomID, &out.OwnerPublicKey, &out.Title, &out.Description, &out.Visibility, &out.AvatarHash, &out.AvatarBytes, &out.AvatarContentType, &out.StateID, &out.CreatedAt, &out.UpdatedAt, &out.DeletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatRoomRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ChatRoomRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) SearchRooms(ctx context.Context, query string, limit int, offset int) ([]clientapi.ChatRoomRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT room_id, owner_public_key, title, COALESCE(description,''), visibility, COALESCE(avatar_hash,''), COALESCE(avatar_bytes,''::bytea), COALESCE(avatar_content_type,''), state_id, created_at, updated_at, deleted_at FROM chat_rooms WHERE deleted_at IS NULL AND visibility = $1 AND POSITION(LOWER($2) IN LOWER(title)) > 0 ORDER BY updated_at DESC, room_id DESC LIMIT $3 OFFSET $4`, clientapi.VisibilityPublic, query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanRooms(rows)
+}
+
+func (r *ClientRepository) UpdateRoom(ctx context.Context, userPublicKey []byte, roomID uuid.UUID, title string, description string, avatarHash string, updatedAt time.Time) error {
+	room, err := r.GetRoom(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	if string(room.OwnerPublicKey) != string(userPublicKey) {
+		return clientapi.ErrForbidden
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_rooms SET title = COALESCE(NULLIF($3,''), title), description = COALESCE(NULLIF($4,''), description), avatar_hash = COALESCE(NULLIF($5,''), avatar_hash), updated_at = $2 WHERE room_id = $1`, roomID, updatedAt, title, description, avatarHash)
+	return err
+}
+
+func (r *ClientRepository) DeleteRoom(ctx context.Context, userPublicKey []byte, roomID uuid.UUID, deletedAt time.Time) error {
+	room, err := r.GetRoom(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	if string(room.OwnerPublicKey) != string(userPublicKey) {
+		return clientapi.ErrForbidden
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_rooms SET deleted_at = $2, updated_at = $2 WHERE room_id = $1`, roomID, deletedAt)
+	return err
+}
+
+func (r *ClientRepository) GetRoomAvatar(ctx context.Context, roomID uuid.UUID) (clientapi.AvatarRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COALESCE(avatar_bytes,''::bytea), COALESCE(avatar_content_type,'') FROM chat_rooms WHERE room_id = $1 AND deleted_at IS NULL`, roomID)
+	var out clientapi.AvatarRecord
+	if err := row.Scan(&out.Bytes, &out.ContentType); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.AvatarRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.AvatarRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) AddRoomState(ctx context.Context, userPublicKey []byte, state clientapi.ChatRoomStateRecord) error {
+	if _, err := r.ensureMember(ctx, state.RoomID, userPublicKey); err != nil {
+		return err
+	}
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_room_states (id, room_id, group_id, epoch, tree_bytes, tree_hash, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, state.ID, state.RoomID, state.GroupID, state.Epoch, state.TreeBytes, state.TreeHash, state.CreatedAt); err != nil {
+		return err
+	}
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_rooms SET state_id = $2, updated_at = $3 WHERE room_id = $1`, state.RoomID, state.ID, state.CreatedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *ClientRepository) FetchRoomState(ctx context.Context, userPublicKey []byte, roomID uuid.UUID, epoch int64) (clientapi.ChatRoomStateRecord, error) {
+	if _, err := r.ensureMember(ctx, roomID, userPublicKey); err != nil {
+		return clientapi.ChatRoomStateRecord{}, err
+	}
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT id, room_id, group_id, epoch, tree_bytes, tree_hash, created_at FROM chat_room_states WHERE room_id = $1 AND epoch = $2`, roomID, epoch)
+	var out clientapi.ChatRoomStateRecord
+	if err := row.Scan(&out.ID, &out.RoomID, &out.GroupID, &out.Epoch, &out.TreeBytes, &out.TreeHash, &out.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatRoomStateRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ChatRoomStateRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) JoinRoom(ctx context.Context, member clientapi.ChatMemberRecord) error {
+	room, err := r.GetRoom(ctx, member.RoomID)
+	if err != nil {
+		return err
+	}
+	if room.Visibility == clientapi.VisibilityPrivate {
+		return clientapi.ErrForbidden
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_members (room_id, user_public_key, role, notification_level, joined_at, left_at) VALUES ($1,$2,$3,$4,$5,NULL) ON CONFLICT (room_id, user_public_key) DO UPDATE SET left_at = NULL, role = EXCLUDED.role, notification_level = EXCLUDED.notification_level`, member.RoomID, member.UserPublicKey, member.Role, member.NotificationLevel, member.JoinedAt)
+	return err
+}
+
+func (r *ClientRepository) LeaveRoom(ctx context.Context, roomID uuid.UUID, userPublicKey []byte, leftAt time.Time) error {
+	res, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET left_at = $3 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, userPublicKey, leftAt)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return clientapi.ErrNotFound
+	}
+	return nil
+}
+
+func (r *ClientRepository) KickMember(ctx context.Context, actorPublicKey []byte, roomID uuid.UUID, targetPublicKey []byte, kickedAt time.Time) error {
+	if err := r.ensureRoomAdmin(ctx, roomID, actorPublicKey); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET left_at = $3 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, targetPublicKey, kickedAt)
+	return err
+}
+
+func (r *ClientRepository) ListMembers(ctx context.Context, roomID uuid.UUID, limit int, offset int) ([]clientapi.ChatMemberRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT room_id, user_public_key, role, notification_level, joined_at, left_at FROM chat_members WHERE room_id = $1 AND left_at IS NULL ORDER BY joined_at ASC, user_public_key ASC LIMIT $2 OFFSET $3`, roomID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.ChatMemberRecord
+	for rows.Next() {
+		var item clientapi.ChatMemberRecord
+		if err := rows.Scan(&item.RoomID, &item.UserPublicKey, &item.Role, &item.NotificationLevel, &item.JoinedAt, &item.LeftAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) UpdateMemberRole(ctx context.Context, actorPublicKey []byte, roomID uuid.UUID, targetPublicKey []byte, role int16, updatedAt time.Time) error {
+	if err := r.ensureRoomAdmin(ctx, roomID, actorPublicKey); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET role = $4 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, targetPublicKey, updatedAt, role)
+	return err
+}
+
+func (r *ClientRepository) CreateMemberPermission(ctx context.Context, actorPublicKey []byte, permission clientapi.ChatMemberPermissionRecord) error {
+	if err := r.ensureRoomAdmin(ctx, permission.RoomID, actorPublicKey); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_member_permissions (permission_id, room_id, user_public_key, permission_key, is_allowed, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (room_id, user_public_key, permission_key) DO UPDATE SET is_allowed = EXCLUDED.is_allowed, updated_at = EXCLUDED.updated_at`, permission.PermissionID, permission.RoomID, permission.UserPublicKey, permission.PermissionKey, permission.IsAllowed, permission.CreatedAt, permission.UpdatedAt)
+	return err
+}
+
+func (r *ClientRepository) ListMemberPermissions(ctx context.Context, roomID uuid.UUID, userPublicKey []byte, limit int, offset int) ([]clientapi.ChatMemberPermissionRecord, error) {
+	query := `SELECT permission_id, room_id, user_public_key, permission_key, is_allowed, created_at, updated_at FROM chat_member_permissions WHERE room_id = $1 ORDER BY created_at DESC, permission_id DESC LIMIT $2 OFFSET $3`
+	args := []any{roomID, limit, offset}
+	if len(userPublicKey) == 32 {
+		query = `SELECT permission_id, room_id, user_public_key, permission_key, is_allowed, created_at, updated_at FROM chat_member_permissions WHERE room_id = $1 AND user_public_key = $2 ORDER BY created_at DESC, permission_id DESC LIMIT $3 OFFSET $4`
+		args = []any{roomID, userPublicKey, limit, offset}
+	}
+	rows, err := r.dbtx(ctx).QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []clientapi.ChatMemberPermissionRecord
+	for rows.Next() {
+		var item clientapi.ChatMemberPermissionRecord
+		if err := rows.Scan(&item.PermissionID, &item.RoomID, &item.UserPublicKey, &item.PermissionKey, &item.IsAllowed, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) UpdateMemberPermission(ctx context.Context, actorPublicKey []byte, permissionID uuid.UUID, isAllowed bool, updatedAt time.Time) error {
+	roomID, err := r.lookupPermissionRoom(ctx, permissionID)
+	if err != nil {
+		return err
+	}
+	if err := r.ensureRoomAdmin(ctx, roomID, actorPublicKey); err != nil {
+		return err
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_member_permissions SET is_allowed = $2, updated_at = $3 WHERE permission_id = $1`, permissionID, isAllowed, updatedAt)
+	return err
+}
+
+func (r *ClientRepository) DeleteMemberPermission(ctx context.Context, actorPublicKey []byte, permissionID uuid.UUID, deletedAt time.Time) error {
+	roomID, err := r.lookupPermissionRoom(ctx, permissionID)
+	if err != nil {
+		return err
+	}
+	if err := r.ensureRoomAdmin(ctx, roomID, actorPublicKey); err != nil {
+		return err
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `DELETE FROM chat_member_permissions WHERE permission_id = $1`, permissionID)
+	return err
+}
+
+func (r *ClientRepository) lookupPermissionRoom(ctx context.Context, permissionID uuid.UUID) (uuid.UUID, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT room_id FROM chat_member_permissions WHERE permission_id = $1`, permissionID)
+	var roomID uuid.UUID
+	if err := row.Scan(&roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return uuid.Nil, clientapi.ErrNotFound
+		}
+		return uuid.Nil, err
+	}
+	return roomID, nil
+}
+
+func (r *ClientRepository) CreateInvitation(ctx context.Context, invitation clientapi.ChatInvitationRecord) error {
+	if err := r.ensureRoomAdmin(ctx, invitation.RoomID, invitation.InviterPublicKey); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_invitations (invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, invitation.InvitationID, invitation.RoomID, invitation.InviterPublicKey, invitation.InviteePublicKey, invitation.State, invitation.CreatedAt, invitation.UpdatedAt)
+	return err
+}
+
+func (r *ClientRepository) ListSentInvitations(ctx context.Context, inviterPublicKey []byte, roomID *uuid.UUID, limit int, offset int) ([]clientapi.ChatInvitationRecord, error) {
+	query := `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`
+	args := []any{inviterPublicKey, limit, offset}
+	if roomID != nil {
+		query = `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 AND room_id = $2 ORDER BY created_at DESC, invitation_id DESC LIMIT $3 OFFSET $4`
+		args = []any{inviterPublicKey, *roomID, limit, offset}
+	}
+	rows, err := r.dbtx(ctx).QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanInvitations(rows)
+}
+
+func (r *ClientRepository) ListIncomingInvitations(ctx context.Context, inviteePublicKey []byte, limit int, offset int) ([]clientapi.ChatInvitationRecord, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE invitee_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`, inviteePublicKey, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanInvitations(rows)
+}
+
+func (r *ClientRepository) UpdateInvitationState(ctx context.Context, invitationID uuid.UUID, actorPublicKey []byte, targetState int16, updatedAt time.Time, allowedCurrentStates []int16) (clientapi.ChatInvitationRecord, error) {
+	record, err := r.getInvitation(ctx, invitationID)
+	if err != nil {
+		return clientapi.ChatInvitationRecord{}, err
+	}
+	if string(actorPublicKey) != string(record.InviterPublicKey) && string(actorPublicKey) != string(record.InviteePublicKey) {
+		return clientapi.ChatInvitationRecord{}, clientapi.ErrForbidden
+	}
+	if !containsState(allowedCurrentStates, record.State) {
+		return clientapi.ChatInvitationRecord{}, clientapi.ErrConflict
+	}
+	row := r.dbtx(ctx).QueryRowContext(ctx, `UPDATE chat_invitations SET state = $2, updated_at = $3 WHERE invitation_id = $1 RETURNING invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at`, invitationID, targetState, updatedAt)
+	var out clientapi.ChatInvitationRecord
+	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		return clientapi.ChatInvitationRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) getInvitation(ctx context.Context, invitationID uuid.UUID) (clientapi.ChatInvitationRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE invitation_id = $1`, invitationID)
+	var out clientapi.ChatInvitationRecord
+	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatInvitationRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ChatInvitationRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) CreateMessage(ctx context.Context, message clientapi.MessageRecord) error {
+	if _, err := r.ensureMember(ctx, message.RoomID, message.SenderPublicKey); err != nil {
+		return err
+	}
+	body, err := json.Marshal(message.Body)
+	if err != nil {
+		return err
+	}
+	_, err = r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_messages (message_id, room_id, sender_public_key, client_msg_id, body, created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6)`, message.MessageID, message.RoomID, message.SenderPublicKey, message.ClientMsgID, string(body), message.CreatedAt)
+	return err
+}
+
+func (r *ClientRepository) DeleteMessage(ctx context.Context, actorPublicKey []byte, roomID uuid.UUID, messageID uuid.UUID, deletedAt time.Time) error {
+	member, err := r.ensureMember(ctx, roomID, actorPublicKey)
+	if err != nil {
+		return err
+	}
+	res, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_messages SET deleted_at = $3 WHERE room_id = $1 AND message_id = $2 AND (sender_public_key = $4 OR $5 >= $6)`, roomID, messageID, deletedAt, actorPublicKey, member.Role, clientapi.RoleAdmin)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return clientapi.ErrNotFound
+	}
+	return nil
+}
+
+func (r *ClientRepository) ListActiveRoomMemberPublicKeys(ctx context.Context, roomID uuid.UUID) ([][]byte, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT user_public_key FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items [][]byte
+	for rows.Next() {
+		var value []byte
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		items = append(items, value)
+	}
+	return items, rows.Err()
+}
+
+func (r *ClientRepository) CountServerStats(ctx context.Context) (clientapi.ServerStats, error) {
+	stats := clientapi.ServerStats{}
+	queries := []struct {
+		query string
+		dst   *int64
+	}{
+		{`SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL`, &stats.Profiles},
+		{`SELECT COUNT(*) FROM device_push_tokens`, &stats.Devices},
+		{`SELECT COUNT(*) FROM friends`, &stats.Friends},
+		{`SELECT COUNT(*) FROM chat_rooms WHERE deleted_at IS NULL`, &stats.Rooms},
+		{`SELECT COUNT(*) FROM chat_messages WHERE deleted_at IS NULL`, &stats.Messages},
+	}
+	for _, item := range queries {
+		if err := r.dbtx(ctx).QueryRowContext(ctx, item.query).Scan(item.dst); err != nil {
+			return clientapi.ServerStats{}, err
+		}
+	}
+	return stats, nil
+}
+
+func (r *ClientRepository) CountUserStats(ctx context.Context, userPublicKey []byte) (clientapi.UserStats, error) {
+	stats := clientapi.UserStats{}
+	queries := []struct {
+		query string
+		dst   *int64
+	}{
+		{`SELECT COUNT(*) FROM device_push_tokens WHERE user_public_key = $1`, &stats.Devices},
+		{`SELECT COUNT(*) FROM key_packages WHERE user_public_key = $1`, &stats.KeyPackages},
+		{`SELECT COUNT(*) FROM friends WHERE user_public_key = $1`, &stats.Friends},
+		{`SELECT COUNT(*) FROM friend_requests WHERE sender_public_key = $1 AND state = 1`, &stats.OutgoingFriendRequests},
+		{`SELECT COUNT(*) FROM chat_members WHERE user_public_key = $1 AND left_at IS NULL`, &stats.Rooms},
+	}
+	for _, item := range queries {
+		if err := r.dbtx(ctx).QueryRowContext(ctx, item.query, userPublicKey).Scan(item.dst); err != nil {
+			return clientapi.UserStats{}, err
+		}
+	}
+	return stats, nil
+}
+
+func (r *ClientRepository) CountGroupStats(ctx context.Context, roomID uuid.UUID) (clientapi.GroupStats, error) {
+	stats := clientapi.GroupStats{}
+	queries := []struct {
+		query string
+		dst   *int64
+	}{
+		{`SELECT COUNT(*) FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, &stats.Members},
+		{`SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND deleted_at IS NULL`, &stats.Messages},
+		{`SELECT COUNT(*) FROM chat_invitations WHERE room_id = $1`, &stats.Invites},
+	}
+	for _, item := range queries {
+		if err := r.dbtx(ctx).QueryRowContext(ctx, item.query, roomID).Scan(item.dst); err != nil {
+			return clientapi.GroupStats{}, err
+		}
+	}
+	return stats, nil
+}
+
+func (r *ClientRepository) ensureMember(ctx context.Context, roomID uuid.UUID, userPublicKey []byte) (clientapi.ChatMemberRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT room_id, user_public_key, role, notification_level, joined_at, left_at FROM chat_members WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, userPublicKey)
+	var member clientapi.ChatMemberRecord
+	if err := row.Scan(&member.RoomID, &member.UserPublicKey, &member.Role, &member.NotificationLevel, &member.JoinedAt, &member.LeftAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatMemberRecord{}, clientapi.ErrForbidden
+		}
+		return clientapi.ChatMemberRecord{}, err
+	}
+	return member, nil
+}
+
+func (r *ClientRepository) ensureRoomAdmin(ctx context.Context, roomID uuid.UUID, userPublicKey []byte) error {
+	member, err := r.ensureMember(ctx, roomID, userPublicKey)
+	if err != nil {
+		return err
+	}
+	if member.Role < clientapi.RoleAdmin {
+		return clientapi.ErrForbidden
+	}
+	return nil
+}
+
+var _ clientapi.Store = (*ClientRepository)(nil)

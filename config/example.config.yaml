@@ -15,6 +15,9 @@ app:
     https_port: 8443
     ws_port: 8080
     wss_port: 8443
+  session_challenge_ttl: 5m
+  event_retention: 24h
+  event_batch_size: 100
   tls:
     cert_file: config/certs/server.crt
     key_file: config/certs/server.key

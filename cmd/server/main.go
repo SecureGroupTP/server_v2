@@ -8,7 +8,14 @@ import (
 	"syscall"
 	"time"
 
+	appauth "server_v2/internal/application/auth"
+	clientapi "server_v2/internal/application/clientapi"
 	"server_v2/internal/config"
+	"server_v2/internal/delivery/clientrpc"
+	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/randombytes"
+	"server_v2/internal/platform/uuidx"
+	"server_v2/internal/repository/postgres"
 	appserver "server_v2/internal/server"
 )
 
@@ -38,8 +45,61 @@ func main() {
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
-	httpHandler := appserver.NewHandler(logger, cfg.App.OutputPorts)
-	runtime := appserver.NewRuntime(cfg.App, httpHandler, logger)
+	store, err := postgres.Open(context.Background(), cfg.Postgres.DSN())
+	if err != nil {
+		slog.Error("failed to open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	authRepository := postgres.NewAuthRepository(store.DB())
+	clientRepository := postgres.NewClientRepository(store.DB())
+	txManager := postgres.NewTxManager(store.DB())
+	authService, err := appauth.NewService(
+		appauth.Config{
+			ChallengeTTL:   cfg.App.SessionChallengeTTL,
+			EventRetention: cfg.App.EventRetention,
+			EventBatchSize: cfg.App.EventBatchSize,
+		},
+		clock.Real{},
+		uuidx.DefaultGenerator{},
+		randombytes.CryptoReader{},
+		txManager,
+		authRepository,
+		authRepository,
+		authRepository,
+	)
+	if err != nil {
+		slog.Error("failed to initialize auth service", "error", err)
+		os.Exit(1)
+	}
+
+	clientService, err := clientapi.NewService(
+		clientapi.Config{
+			AppName:             cfg.App.Name,
+			Version:             "2",
+			SessionChallengeTTL: cfg.App.SessionChallengeTTL,
+			EventRetention:      cfg.App.EventRetention,
+			EventBatchSize:      cfg.App.EventBatchSize,
+		},
+		clock.Real{},
+		uuidx.DefaultGenerator{},
+		txManager,
+		clientRepository,
+		authRepository,
+		authService,
+	)
+	if err != nil {
+		slog.Error("failed to initialize client api service", "error", err)
+		os.Exit(1)
+	}
+
+	clientHandler := clientrpc.NewHandler(logger, authService, clientService)
+	httpConnectionBinder := appserver.NewHTTPConnectionBinder(clientHandler)
+	httpHandler := appserver.NewHandler(logger, cfg.App.OutputPorts, clientHandler)
+	runtime := appserver.NewRuntime(cfg.App, httpHandler, clientHandler, httpConnectionBinder, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

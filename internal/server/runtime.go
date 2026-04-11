@@ -25,9 +25,13 @@ const (
 )
 
 type Runtime struct {
-	cfg     config.AppConfiguration
-	handler http.Handler
-	logger  *slog.Logger
+	cfg           config.AppConfiguration
+	handler       http.Handler
+	streamHandler interface {
+		HandleStream(ctx context.Context, rw io.ReadWriter) error
+	}
+	httpConnectionBinder *HTTPConnectionBinder
+	logger               *slog.Logger
 
 	errCh chan error
 
@@ -36,12 +40,22 @@ type Runtime struct {
 	mu           sync.Mutex
 }
 
-func NewRuntime(cfg config.AppConfiguration, handler http.Handler, logger *slog.Logger) *Runtime {
+func NewRuntime(
+	cfg config.AppConfiguration,
+	handler http.Handler,
+	streamHandler interface {
+		HandleStream(ctx context.Context, rw io.ReadWriter) error
+	},
+	httpConnectionBinder *HTTPConnectionBinder,
+	logger *slog.Logger,
+) *Runtime {
 	return &Runtime{
-		cfg:     cfg,
-		handler: handler,
-		logger:  logger,
-		errCh:   make(chan error, 1),
+		cfg:                  cfg,
+		handler:              handler,
+		streamHandler:        streamHandler,
+		httpConnectionBinder: httpConnectionBinder,
+		logger:               logger,
+		errCh:                make(chan error, 1),
 	}
 }
 
@@ -124,6 +138,8 @@ func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  idleTimeout,
+		ConnContext:  r.connContext,
+		ConnState:    r.connState,
 	}
 
 	r.mu.Lock()
@@ -150,6 +166,20 @@ func (r *Runtime) startHTTPServer(port int, withTLS bool) error {
 	}()
 
 	return nil
+}
+
+func (r *Runtime) connContext(ctx context.Context, conn net.Conn) context.Context {
+	if r.httpConnectionBinder == nil {
+		return ctx
+	}
+	return r.httpConnectionBinder.ConnContext(ctx, conn)
+}
+
+func (r *Runtime) connState(conn net.Conn, state http.ConnState) {
+	if r.httpConnectionBinder == nil {
+		return
+	}
+	r.httpConnectionBinder.ConnState(conn, state)
 }
 
 func (r *Runtime) startTCPListener(port int, withTLS bool) error {
@@ -194,7 +224,7 @@ func (r *Runtime) startTCPListener(port int, withTLS bool) error {
 				return
 			}
 
-			go handleTCPConnection(conn)
+			go r.handleTCPConnection(conn)
 		}
 	}()
 
@@ -220,9 +250,16 @@ func (r *Runtime) reportError(err error) {
 	}
 }
 
-func handleTCPConnection(conn net.Conn) {
-	defer conn.Close()
-	_, _ = io.Copy(conn, conn)
+func (r *Runtime) handleTCPConnection(conn net.Conn) {
+	defer func() {
+		_ = conn.Close()
+	}()
+	if r.streamHandler == nil {
+		return
+	}
+	if err := r.streamHandler.HandleStream(context.Background(), conn); err != nil && !errors.Is(err, net.ErrClosed) {
+		r.logger.Warn("tcp client stream failed", "error", err)
+	}
 }
 
 func uniquePorts(first int, second int) []int {

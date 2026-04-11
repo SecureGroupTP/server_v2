@@ -3,14 +3,18 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type AppConfiguration struct {
-	Name        string                `yaml:"name"`
-	Host        string                `yaml:"host"`
-	Ports       AppPortsConfiguration `yaml:"ports"`
-	OutputPorts AppPortsConfiguration `yaml:"output_ports"`
-	TLS         AppTLSConfiguration   `yaml:"tls"`
+	Name                string                `yaml:"name"`
+	Host                string                `yaml:"host"`
+	Ports               AppPortsConfiguration `yaml:"ports"`
+	OutputPorts         AppPortsConfiguration `yaml:"output_ports"`
+	SessionChallengeTTL time.Duration         `yaml:"session_challenge_ttl"`
+	EventRetention      time.Duration         `yaml:"event_retention"`
+	EventBatchSize      int                   `yaml:"event_batch_size"`
+	TLS                 AppTLSConfiguration   `yaml:"tls"`
 }
 
 type AppPortsConfiguration struct {
@@ -42,6 +46,15 @@ func (a AppConfiguration) Validate() error {
 
 	if err := a.OutputPorts.Validate("app.output_ports"); err != nil {
 		return err
+	}
+	if a.SessionChallengeTTL <= 0 {
+		return fmt.Errorf("app.session_challenge_ttl must be > 0")
+	}
+	if a.EventRetention <= 0 {
+		return fmt.Errorf("app.event_retention must be > 0")
+	}
+	if a.EventBatchSize <= 0 {
+		return fmt.Errorf("app.event_batch_size must be > 0")
 	}
 
 	return nil

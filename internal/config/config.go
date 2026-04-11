@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +35,7 @@ func Load(path string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode yaml config: %w", err)
 	}
+	applyEnvOverrides(&cfg)
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -62,4 +65,28 @@ func fallbackString(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func applyEnvOverrides(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_EVENT_RETENTION")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.EventRetention = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_SESSION_CHALLENGE_TTL")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.SessionChallengeTTL = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_EVENT_BATCH_SIZE")); value != "" {
+		if size, err := strconv.Atoi(value); err == nil {
+			cfg.App.EventBatchSize = size
+		}
+	}
 }

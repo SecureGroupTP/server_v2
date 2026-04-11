@@ -1,4 +1,20 @@
 services:
+  flyway:
+    container_name: server-v2-flyway
+    image: flyway/flyway:11-alpine
+    command:
+      - -configFiles=/flyway/conf/flyway.conf
+      - migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./db/migrations:/flyway/sql:ro
+      - ./db/flyway.conf:/flyway/conf/flyway.conf:ro
+    networks:
+      - backend
+    restart: "no"
+
   app:
     container_name: server-v2-app
     build:
@@ -11,6 +27,8 @@ services:
       - ./config/config.yaml:/app/config/config.yaml:ro
       - ./config/certs:/app/config/certs:ro
     depends_on:
+      flyway:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -25,9 +43,9 @@ services:
     container_name: server-v2-postgres
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     networks:
@@ -35,7 +53,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app}"]
       interval: 5s
       timeout: 3s
       retries: 20

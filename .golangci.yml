@@ -1,0 +1,77 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - depguard
+    - errcheck
+    - errorlint
+    - funlen
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - staticcheck
+    - unused
+  settings:
+    funlen:
+      lines: 150
+      statements: 80
+      ignore-comments: true
+    depguard:
+      rules:
+        domain:
+          files:
+            - internal/domain/**/*.go
+          allow:
+            - $gostd
+            - github.com/fxamacker/cbor/v2
+            - github.com/google/uuid
+        application:
+          files:
+            - internal/application/**/*.go
+          deny:
+            - pkg: server_v2/internal/repository
+              desc: application must not import repository implementations
+            - pkg: server_v2/internal/delivery
+              desc: application must not import delivery
+            - pkg: server_v2/internal/server
+              desc: application must not import server adapters
+            - pkg: server_v2/internal/config
+              desc: application must not import config adapters
+        delivery:
+          files:
+            - internal/delivery/**/*.go
+          deny:
+            - pkg: server_v2/internal/repository
+              desc: delivery must not import repository implementations
+        server:
+          files:
+            - internal/server/**/*.go
+          deny:
+            - pkg: server_v2/internal/repository
+              desc: server adapters must not import repository implementations
+        repository:
+          files:
+            - internal/repository/**/*.go
+          deny:
+            - pkg: server_v2/internal/delivery
+              desc: repository must not import delivery
+            - pkg: server_v2/internal/server
+              desc: repository must not import server adapters
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(server_v2)
