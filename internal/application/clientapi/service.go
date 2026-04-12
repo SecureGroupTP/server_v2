@@ -247,6 +247,10 @@ func (s *Service) ListFriends(ctx context.Context, user []byte, limit int, curso
 	if err != nil {
 		return nil, err
 	}
+	totalCount, err := s.store.CountFriends(ctx, user)
+	if err != nil {
+		return nil, err
+	}
 	friends, nextCursor := paginateSlice(friends, limit, offset)
 	items := make([]map[string]any, 0, len(friends))
 	for _, item := range friends {
@@ -256,7 +260,7 @@ func (s *Service) ListFriends(ctx context.Context, user []byte, limit int, curso
 			"acceptedAt": item.AcceptedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
-	return map[string]any{"items": items, "nextCursor": nextCursor, "totalCount": nil}, nil
+	return map[string]any{"items": items, "nextCursor": nextCursor, "totalCount": totalCount}, nil
 }
 
 func (s *Service) RemoveFriend(ctx context.Context, user []byte, friendPublicKey []byte) (map[string]any, error) {

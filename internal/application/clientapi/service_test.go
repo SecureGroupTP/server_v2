@@ -33,6 +33,7 @@ type storeMock struct {
 	hasBanStatus   bool
 	profiles       []ProfileRecord
 	friends        []FriendRecord
+	friendCount    int64
 }
 
 func (s *storeMock) GetProfile(context.Context, []byte) (ProfileRecord, error) {
@@ -71,6 +72,7 @@ func (s *storeMock) DeleteKeyPackagesByUserDevice(context.Context, []byte, strin
 func (s *storeMock) ListFriends(context.Context, []byte, int, int) ([]FriendRecord, error) {
 	return s.friends, nil
 }
+func (s *storeMock) CountFriends(context.Context, []byte) (int64, error)           { return s.friendCount, nil }
 func (s *storeMock) RemoveFriend(context.Context, []byte, []byte, time.Time) error { return nil }
 func (s *storeMock) CreateFriendRequest(_ context.Context, request FriendRequestRecord) error {
 	s.friendRequest = request
@@ -311,6 +313,29 @@ func TestServiceSearchProfilesProvidesCursor(t *testing.T) {
 	}
 	if response["nextCursor"] == nil {
 		t.Fatalf("expected nextCursor, got %#v", response)
+	}
+}
+
+func TestServiceListFriendsIncludesTotalCount(t *testing.T) {
+	now := time.Date(2026, 4, 11, 20, 0, 0, 0, time.UTC)
+	store := &storeMock{
+		friends: []FriendRecord{
+			{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), FriendPublicKey: bytes32(4), AcceptedAt: now},
+			{ID: uuid.MustParse("55555555-5555-5555-5555-555555555555"), FriendPublicKey: bytes32(5), AcceptedAt: now},
+		},
+		friendCount: 7,
+	}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.ListFriends(context.Background(), bytes32(1), 2, "")
+	if err != nil {
+		t.Fatalf("list friends: %v", err)
+	}
+	if response["totalCount"] != int64(7) {
+		t.Fatalf("expected totalCount 7, got %#v", response["totalCount"])
 	}
 }
 

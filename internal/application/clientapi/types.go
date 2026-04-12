@@ -66,6 +66,7 @@ type Store interface {
 	DeleteKeyPackagesByUserDevice(ctx context.Context, userPublicKey []byte, deviceID string) error
 
 	ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]FriendRecord, error)
+	CountFriends(ctx context.Context, userPublicKey []byte) (int64, error)
 	RemoveFriend(ctx context.Context, userPublicKey []byte, friendPublicKey []byte, removedAt time.Time) error
 	CreateFriendRequest(ctx context.Context, request FriendRequestRecord) error
 	UpdateFriendRequestState(ctx context.Context, requestID uuid.UUID, actorPublicKey []byte, allowedFromStates []int16, targetState int16, updatedAt time.Time) (FriendRequestRecord, error)

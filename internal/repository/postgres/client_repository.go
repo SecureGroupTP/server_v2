@@ -229,6 +229,14 @@ func (r *ClientRepository) ListFriends(ctx context.Context, userPublicKey []byte
 	return items, rows.Err()
 }
 
+func (r *ClientRepository) CountFriends(ctx context.Context, userPublicKey []byte) (int64, error) {
+	var count int64
+	if err := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM friends WHERE user_public_key = $1`, userPublicKey).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (r *ClientRepository) RemoveFriend(ctx context.Context, userPublicKey []byte, friendPublicKey []byte, removedAt time.Time) error {
 	_, err := r.dbtx(ctx).ExecContext(ctx, `DELETE FROM friends WHERE (user_public_key = $1 AND friend_public_key = $2) OR (user_public_key = $2 AND friend_public_key = $1)`, userPublicKey, friendPublicKey)
 	return err
