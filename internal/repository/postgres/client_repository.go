@@ -60,13 +60,13 @@ WHERE public_key = $1
 	return record, true, nil
 }
 
-func (r *ClientRepository) UpdateProfile(ctx context.Context, publicKey []byte, displayName string, avatarHash string, bio string, updatedAt time.Time) error {
+func (r *ClientRepository) UpdateProfile(ctx context.Context, publicKey []byte, username string, displayName string, avatarHash string, bio string, updatedAt time.Time) error {
 	_, err := r.dbtx(ctx).ExecContext(ctx, `
-INSERT INTO profiles (public_key, display_name, bio, avatar_hash, last_seen_at, created_at, updated_at)
-VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5, $5, $5)
+INSERT INTO profiles (public_key, username, display_name, bio, avatar_hash, last_seen_at, created_at, updated_at)
+VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $6, $6)
 ON CONFLICT (public_key)
-DO UPDATE SET display_name = NULLIF($2, ''), bio = NULLIF($3, ''), avatar_hash = NULLIF($4, ''), updated_at = $5, deleted_at = NULL
-`, publicKey, displayName, bio, avatarHash, updatedAt)
+DO UPDATE SET username = NULLIF($2, ''), display_name = NULLIF($3, ''), bio = NULLIF($4, ''), avatar_hash = NULLIF($5, ''), updated_at = $6, deleted_at = NULL
+`, publicKey, username, displayName, bio, avatarHash, updatedAt)
 	if err != nil {
 		return fmt.Errorf("update profile: %w", err)
 	}

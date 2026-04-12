@@ -44,7 +44,7 @@ func (s *storeMock) GetActiveBanStatus(context.Context, []byte, time.Time) (BanS
 	return s.banStatus, s.hasBanStatus, nil
 }
 
-func (s *storeMock) UpdateProfile(_ context.Context, _ []byte, _, _, _ string, _ time.Time) error {
+func (s *storeMock) UpdateProfile(_ context.Context, _ []byte, _, _, _, _ string, _ time.Time) error {
 	s.profileUpdated = true
 	return nil
 }
@@ -222,7 +222,7 @@ func TestServiceUpdateProfileAppendsEventsToFriends(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
-	_, err = service.UpdateProfile(context.Background(), bytes32(1), "Alice Cooper", "", "bio")
+	_, err = service.UpdateProfile(context.Background(), bytes32(1), "@alice", "Alice Cooper", "", "bio")
 	if err != nil {
 		t.Fatalf("update profile: %v", err)
 	}
@@ -236,6 +236,9 @@ func TestServiceUpdateProfileAppendsEventsToFriends(t *testing.T) {
 		t.Fatalf("unexpected event receiver: %#v", events.events[0].UserPublicKey)
 	}
 	if events.events[0].Payload["displayName"] != "Alice Cooper" {
+		t.Fatalf("unexpected event payload: %#v", events.events[0].Payload)
+	}
+	if events.events[0].Payload["username"] != "@alice" {
 		t.Fatalf("unexpected event payload: %#v", events.events[0].Payload)
 	}
 }

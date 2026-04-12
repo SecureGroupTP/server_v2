@@ -7,7 +7,7 @@ func (h *Handler) handleProfileMethods(ctx context.Context, rpcCall string, para
 	case "getProfile":
 		return h.clientService.GetProfile(ctx, mustBytes(params, "userPublicKey"))
 	case "updateProfile":
-		return h.clientService.UpdateProfile(ctx, state.UserPublicKey, optionalString(params, "displayName"), optionalString(params, "avatarHash"), optionalString(params, "bio"))
+		return h.clientService.UpdateProfile(ctx, state.UserPublicKey, optionalString(params, "username"), optionalString(params, "displayName"), optionalString(params, "avatarHash"), optionalString(params, "bio"))
 	case "searchProfiles":
 		return h.clientService.SearchProfiles(ctx, optionalString(params, "query"), optionalInt(params, "limit"), optionalString(params, "cursor"))
 	case "deleteAccount":

@@ -52,7 +52,7 @@ type SessionLookup interface {
 type Store interface {
 	GetProfile(ctx context.Context, publicKey []byte) (ProfileRecord, error)
 	GetActiveBanStatus(ctx context.Context, publicKey []byte, now time.Time) (BanStatusRecord, bool, error)
-	UpdateProfile(ctx context.Context, publicKey []byte, displayName string, avatarHash string, bio string, updatedAt time.Time) error
+	UpdateProfile(ctx context.Context, publicKey []byte, username string, displayName string, avatarHash string, bio string, updatedAt time.Time) error
 	SearchProfiles(ctx context.Context, query string, limit int, offset int) ([]ProfileRecord, error)
 	DeleteAccount(ctx context.Context, publicKey []byte, deletedAt time.Time) error
 	GetProfileAvatar(ctx context.Context, publicKey []byte) (AvatarRecord, error)

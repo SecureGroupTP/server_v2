@@ -18,10 +18,17 @@ func TestClientRepositoryRoomMessageStats(t *testing.T) {
 	user2 := []byte("22222222222222222222222222222222")
 	roomID := uuid.New()
 
-	if err := repo.UpdateProfile(context.Background(), user1, "Alice", "", "bio", now); err != nil {
+	if err := repo.UpdateProfile(context.Background(), user1, "@alice", "Alice", "", "bio", now); err != nil {
 		t.Fatalf("update profile 1: %v", err)
 	}
-	if err := repo.UpdateProfile(context.Background(), user2, "Bob", "", "bio", now); err != nil {
+	user1Profile, err := repo.GetProfile(context.Background(), user1)
+	if err != nil {
+		t.Fatalf("get profile 1: %v", err)
+	}
+	if user1Profile.Username != "@alice" {
+		t.Fatalf("unexpected username: %q", user1Profile.Username)
+	}
+	if err := repo.UpdateProfile(context.Background(), user2, "@bob", "Bob", "", "bio", now); err != nil {
 		t.Fatalf("update profile 2: %v", err)
 	}
 	if err := repo.CreateRoom(context.Background(), clientapi.ChatRoomRecord{RoomID: roomID, OwnerPublicKey: user1, Title: "room", Visibility: clientapi.VisibilityPublic, CreatedAt: now, UpdatedAt: now}, clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user1, Role: clientapi.RoleOwner, NotificationLevel: clientapi.NotificationAll, JoinedAt: now}); err != nil {
@@ -61,13 +68,14 @@ func TestClientRepositorySearchProfilesPaginationAndBanStatus(t *testing.T) {
 
 	for _, item := range []struct {
 		key         []byte
+		username    string
 		displayName string
 	}{
-		{user1, "Alice"},
-		{user2, "Alicia"},
-		{user3, "Alina"},
+		{user1, "@alice", "Alice"},
+		{user2, "@alicia", "Alicia"},
+		{user3, "@alina", "Alina"},
 	} {
-		if err := repo.UpdateProfile(context.Background(), item.key, item.displayName, "", "bio", now); err != nil {
+		if err := repo.UpdateProfile(context.Background(), item.key, item.username, item.displayName, "", "bio", now); err != nil {
 			t.Fatalf("update profile %q: %v", item.displayName, err)
 		}
 		now = now.Add(time.Second)

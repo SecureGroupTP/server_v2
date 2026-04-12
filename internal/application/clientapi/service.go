@@ -72,9 +72,9 @@ func (s *Service) GetProfile(ctx context.Context, target []byte) (map[string]any
 	}, nil
 }
 
-func (s *Service) UpdateProfile(ctx context.Context, user []byte, displayName string, avatarHash string, bio string) (map[string]any, error) {
+func (s *Service) UpdateProfile(ctx context.Context, user []byte, username string, displayName string, avatarHash string, bio string) (map[string]any, error) {
 	now := s.clock.Now()
-	if err := s.store.UpdateProfile(ctx, user, displayName, avatarHash, bio, now); err != nil {
+	if err := s.store.UpdateProfile(ctx, user, username, displayName, avatarHash, bio, now); err != nil {
 		return nil, err
 	}
 	limit := s.cfg.EventBatchSize
@@ -86,6 +86,7 @@ func (s *Service) UpdateProfile(ctx context.Context, user []byte, displayName st
 		for _, friend := range friends {
 			_ = s.appendEvent(ctx, friend.FriendPublicKey, "profile.updated", map[string]any{
 				"userPublicKey": user,
+				"username":      username,
 				"displayName":   displayName,
 				"avatarHash":    avatarHash,
 				"bio":           bio,
