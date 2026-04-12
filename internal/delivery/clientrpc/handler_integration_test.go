@@ -111,7 +111,7 @@ func TestHandlerAuthHTTPFlow(t *testing.T) {
 		Timestamp: time.Now().UnixMilli(),
 		Version:   2,
 		Parameters: mustCBOR(t, map[string]any{
-			"requestedAt": time.Now().UTC().Format(time.RFC3339Nano),
+			"requestedAt": time.Now().UTC().UnixMicro(),
 		}),
 	}
 	subscribePacket := mustSignedPacket(t, privateKey, subscribePayload)

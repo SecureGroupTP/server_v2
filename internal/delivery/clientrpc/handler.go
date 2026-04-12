@@ -68,12 +68,12 @@ type solveAuthChallengeParams struct {
 }
 
 type subscribeToEventsParams struct {
-	RequestedAt string `cbor:"requestedAt"`
+	RequestedAt int64 `cbor:"requestedAt"`
 }
 
 type unsubscribeFromEventsParams struct {
 	SubscriptionID uuid.UUID `cbor:"subscriptionId"`
-	RequestedAt    string    `cbor:"requestedAt"`
+	RequestedAt    int64     `cbor:"requestedAt"`
 }
 
 func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service) *Handler {
