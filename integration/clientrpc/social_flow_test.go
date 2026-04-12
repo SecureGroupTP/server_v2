@@ -373,7 +373,7 @@ func (c *tcpRPCClient) Call(ctx context.Context, rpcName string, params map[stri
 		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
 	}
 	packet := signedPacket(c.keys.privateKey, rpcName, params)
-	if err := c.encoder.Encode([]rpc.RequestPacket{packet}); err != nil {
+	if err := c.encoder.Encode(packet); err != nil {
 		return nil, err
 	}
 	var responses []rpc.ResponsePacket

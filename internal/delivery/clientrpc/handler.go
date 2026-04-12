@@ -249,7 +249,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	}()
 
 	for {
-		var payload []rpc.RequestPacket
+		var payload cbor.RawMessage
 		if err := decoder.Decode(&payload); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -257,7 +257,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 			return fmt.Errorf("decode stream batch: %w", err)
 		}
 
-		responses, nextState, _ := h.handlePackets(ctx, payload, state)
+		responses, nextState, _ := h.handleBatch(ctx, payload, state)
 		state = nextState
 		if err := encoder.Encode(responses); err != nil {
 			return fmt.Errorf("encode stream batch: %w", err)
