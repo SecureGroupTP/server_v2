@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,9 +18,10 @@ import (
 )
 
 const (
-	readTimeout  = 10 * time.Second
-	writeTimeout = 10 * time.Second
-	idleTimeout  = 60 * time.Second
+	readTimeout           = 10 * time.Second
+	writeTimeout          = 10 * time.Second
+	idleTimeout           = 60 * time.Second
+	tcpBannerWriteTimeout = 2 * time.Second
 )
 
 type Runtime struct {
@@ -219,9 +221,59 @@ func (r *Runtime) handleTCPConnection(conn net.Conn) {
 		r.logger.Warn("tcp connection closed without stream handler", "remote_addr", conn.RemoteAddr().String())
 		return
 	}
+	banner := tcpDiscoveryBanner(r.cfg.OutputPorts)
+	_ = conn.SetWriteDeadline(time.Now().Add(tcpBannerWriteTimeout))
+	if err := writeAll(conn, banner[:]); err != nil {
+		r.logger.Warn("tcp discovery banner write failed", "remote_addr", conn.RemoteAddr().String(), "error", err)
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
 	if err := r.streamHandler.HandleStream(context.Background(), conn); err != nil && !errors.Is(err, net.ErrClosed) {
 		r.logger.Warn("tcp client stream failed", "error", err)
 	}
+}
+
+func tcpDiscoveryBanner(ports config.AppPortsConfiguration) [25]byte {
+	var out [25]byte
+	if ports.TCPPort > 0 {
+		out[0] |= 1 << 0
+	}
+	if ports.TCPTLSPort > 0 {
+		out[0] |= 1 << 1
+	}
+	if ports.HTTPPort > 0 {
+		out[0] |= 1 << 2
+	}
+	if ports.HTTPSPort > 0 {
+		out[0] |= 1 << 3
+	}
+	if ports.WSPort > 0 {
+		out[0] |= 1 << 4
+	}
+	if ports.WSSPort > 0 {
+		out[0] |= 1 << 5
+	}
+	binary.BigEndian.PutUint32(out[1:5], uint32(ports.TCPPort))
+	binary.BigEndian.PutUint32(out[5:9], uint32(ports.TCPTLSPort))
+	binary.BigEndian.PutUint32(out[9:13], uint32(ports.HTTPPort))
+	binary.BigEndian.PutUint32(out[13:17], uint32(ports.HTTPSPort))
+	binary.BigEndian.PutUint32(out[17:21], uint32(ports.WSPort))
+	binary.BigEndian.PutUint32(out[21:25], uint32(ports.WSSPort))
+	return out
+}
+
+func writeAll(w io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		n, err := w.Write(payload)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		payload = payload[n:]
+	}
+	return nil
 }
 
 func uniquePorts(first int, second int) []int {

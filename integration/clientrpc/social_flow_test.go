@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -355,6 +356,10 @@ func newTCPRPCClient(t *testing.T, port int) *tcpRPCClient {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
 	if err != nil {
 		t.Fatalf("connect tcp rpc: %v", err)
+	}
+	banner := make([]byte, 25)
+	if _, err := io.ReadFull(conn, banner); err != nil {
+		t.Fatalf("read tcp discovery banner: %v", err)
 	}
 	return &tcpRPCClient{keys: newClientKeys(t), conn: conn, encoder: cbor.NewEncoder(conn), decoder: cbor.NewDecoder(conn)}
 }
