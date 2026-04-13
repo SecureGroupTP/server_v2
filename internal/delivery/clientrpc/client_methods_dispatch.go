@@ -9,7 +9,7 @@ func (h *Handler) dispatchClientMethod(ctx context.Context, rpcCall string, para
 	switch rpcCall {
 	case "getProfile", "updateProfile", "searchProfiles", "deleteAccount", "getProfileAvatar":
 		return h.handleProfileMethods(ctx, rpcCall, params, state)
-	case "listDevices", "registerDevicePushToken", "removeDevice", "uploadKeyPackages", "fetchKeyPackages":
+	case "listDevices", "registerDevicePushToken", "removeDevice", "uploadKeyPackages", "fetchKeyPackages", "sendCommit", "sendWelcome":
 		return h.handleDeviceAndMLSMethods(ctx, rpcCall, params, state)
 	case "listFriends", "removeFriend", "sendFriendRequest", "acceptFriendRequest", "declineFriendRequest", "cancelFriendRequest", "listFriendRequests":
 		return h.handleFriendMethods(ctx, rpcCall, params, state)

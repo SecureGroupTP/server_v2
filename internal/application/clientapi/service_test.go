@@ -29,11 +29,13 @@ type storeMock struct {
 	friendRequest  FriendRequestRecord
 	roomCreated    ChatRoomRecord
 	memberCreated  ChatMemberRecord
+	messageCreated MessageRecord
 	banStatus      BanStatusRecord
 	hasBanStatus   bool
 	profiles       []ProfileRecord
 	friends        []FriendRecord
 	friendCount    int64
+	roomMembers    [][]byte
 }
 
 func (s *storeMock) GetProfile(context.Context, []byte) (ProfileRecord, error) {
@@ -161,13 +163,16 @@ func (s *storeMock) ListIncomingInvitations(context.Context, []byte, int, int) (
 func (s *storeMock) UpdateInvitationState(context.Context, uuid.UUID, []byte, int16, time.Time, []int16) (ChatInvitationRecord, error) {
 	return ChatInvitationRecord{}, nil
 }
-func (s *storeMock) CreateMessage(context.Context, MessageRecord) error { return nil }
+func (s *storeMock) CreateMessage(_ context.Context, message MessageRecord) error {
+	s.messageCreated = message
+	return nil
+}
 func (s *storeMock) DeleteMessage(context.Context, []byte, uuid.UUID, uuid.UUID, time.Time) error {
 	return nil
 }
 
 func (s *storeMock) ListActiveRoomMemberPublicKeys(context.Context, uuid.UUID) ([][]byte, error) {
-	return nil, nil
+	return s.roomMembers, nil
 }
 func (s *storeMock) CountServerStats(context.Context) (ServerStats, error) { return ServerStats{}, nil }
 func (s *storeMock) CountUserStats(context.Context, []byte) (UserStats, error) {
@@ -339,6 +344,109 @@ func TestServiceListFriendsIncludesTotalCount(t *testing.T) {
 	}
 	if response["totalCount"] != int64(7) {
 		t.Fatalf("expected totalCount 7, got %#v", response["totalCount"])
+	}
+}
+
+func TestServiceSendCommitAppendsRoomEvents(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 0, 0, 0, time.UTC)
+	roomID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	actor := bytes32(1)
+	memberA := bytes32(2)
+	memberB := bytes32(3)
+	store := &storeMock{roomMembers: [][]byte{actor, memberA, memberB}}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	commit := []byte("commit-1")
+	response, err := service.SendCommit(context.Background(), actor, roomID, commit)
+	if err != nil {
+		t.Fatalf("send commit: %v", err)
+	}
+	if response["acceptedAt"] == nil {
+		t.Fatalf("expected acceptedAt: %#v", response)
+	}
+	if len(events.events) != 2 {
+		t.Fatalf("expected two commit events, got %d", len(events.events))
+	}
+	for _, event := range events.events {
+		if event.EventType != "mlsCommitReceived" {
+			t.Fatalf("unexpected event type: %s", event.EventType)
+		}
+		if event.Payload["roomId"] != roomID.String() {
+			t.Fatalf("unexpected payload: %#v", event.Payload)
+		}
+		payloadBytes, ok := event.Payload["commitBytes"].([]byte)
+		if !ok || string(payloadBytes) != string(commit) {
+			t.Fatalf("unexpected payload bytes: %#v", event.Payload)
+		}
+	}
+}
+
+func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 30, 0, 0, time.UTC)
+	target := bytes32(8)
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{}, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	welcome := []byte("welcome-1")
+	response, err := service.SendWelcome(context.Background(), bytes32(1), target, welcome)
+	if err != nil {
+		t.Fatalf("send welcome: %v", err)
+	}
+	if response["acceptedAt"] == nil {
+		t.Fatalf("expected acceptedAt: %#v", response)
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("expected one welcome event, got %d", len(events.events))
+	}
+	if events.events[0].EventType != "mlsWelcomeReceived" {
+		t.Fatalf("unexpected event type: %s", events.events[0].EventType)
+	}
+	if string(events.events[0].UserPublicKey) != string(target) {
+		t.Fatalf("unexpected event receiver: %#v", events.events[0].UserPublicKey)
+	}
+	payloadBytes, ok := events.events[0].Payload["welcomeBytes"].([]byte)
+	if !ok || string(payloadBytes) != string(welcome) {
+		t.Fatalf("unexpected welcome payload: %#v", events.events[0].Payload)
+	}
+}
+
+func TestServiceSendMessageAppendsMlsBodyEvent(t *testing.T) {
+	now := time.Date(2026, 4, 11, 22, 0, 0, 0, time.UTC)
+	roomID := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	messageID := uuid.MustParse("88888888-8888-8888-8888-888888888888")
+	actor := bytes32(1)
+	member := bytes32(2)
+	store := &storeMock{roomMembers: [][]byte{actor, member}}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{messageID, uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	body := [][]byte{[]byte("cipher-1"), []byte("cipher-2")}
+	response, err := service.SendMessage(context.Background(), actor, roomID, uuid.New(), body)
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if response["messageId"] != messageID {
+		t.Fatalf("unexpected message id: %#v", response["messageId"])
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("expected one message event, got %d", len(events.events))
+	}
+	if events.events[0].EventType != "mlsMessageReceived" {
+		t.Fatalf("unexpected event type: %s", events.events[0].EventType)
+	}
+	rawBody, ok := events.events[0].Payload["body"].([][]byte)
+	if !ok || len(rawBody) != 2 || string(rawBody[0]) != "cipher-1" || string(rawBody[1]) != "cipher-2" {
+		t.Fatalf("unexpected body payload: %#v", events.events[0].Payload["body"])
 	}
 }
 

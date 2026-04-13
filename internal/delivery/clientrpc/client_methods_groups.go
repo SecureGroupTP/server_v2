@@ -31,6 +31,10 @@ func (h *Handler) handleDeviceAndMLSMethods(ctx context.Context, rpcCall string,
 		return h.clientService.UploadKeyPackages(ctx, state.SessionID, state.UserPublicKey, mustMapList(params, "packages"))
 	case "fetchKeyPackages":
 		return h.clientService.FetchKeyPackages(ctx, mustBytesList(params, "userPublicKeys"))
+	case "sendCommit":
+		return h.clientService.SendCommit(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "commitBytes"))
+	case "sendWelcome":
+		return h.clientService.SendWelcome(ctx, state.UserPublicKey, mustBytes(params, "targetUserPublicKey"), mustBytes(params, "welcomeBytes"))
 	default:
 		return nil, nil
 	}

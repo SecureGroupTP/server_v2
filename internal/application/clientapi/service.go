@@ -238,6 +238,36 @@ func (s *Service) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte)
 	return map[string]any{"items": items}, nil
 }
 
+func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID, commitBytes []byte) (map[string]any, error) {
+	now := s.clock.Now()
+	members, err := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range members {
+		if string(member) == string(user) {
+			continue
+		}
+		_ = s.appendEvent(ctx, member, "mlsCommitReceived", map[string]any{
+			"roomId":      roomID.String(),
+			"commitBytes": commitBytes,
+		})
+	}
+	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (s *Service) SendWelcome(ctx context.Context, user []byte, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
+	_ = user
+	now := s.clock.Now()
+	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", map[string]any{
+		"targetUserPublicKey": targetUserPublicKey,
+		"welcomeBytes":        welcomeBytes,
+	}); err != nil {
+		return nil, err
+	}
+	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
 func (s *Service) ListFriends(ctx context.Context, user []byte, limit int, cursor string) (map[string]any, error) {
 	limit = normalizeLimit(limit, 50)
 	offset, err := decodeOffsetCursor(cursor)
@@ -663,7 +693,12 @@ func (s *Service) SendMessage(ctx context.Context, user []byte, roomID uuid.UUID
 		if string(member) == string(user) {
 			continue
 		}
-		_ = s.appendEvent(ctx, member, "message.created", map[string]any{"roomId": roomID.String(), "messageId": message.MessageID.String(), "senderPublicKey": user})
+		_ = s.appendEvent(ctx, member, "mlsMessageReceived", map[string]any{
+			"roomId":          roomID.String(),
+			"messageId":       message.MessageID.String(),
+			"senderPublicKey": user,
+			"body":            body,
+		})
 	}
 	return map[string]any{"messageId": message.MessageID, "createdAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
