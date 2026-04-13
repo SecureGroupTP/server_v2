@@ -51,6 +51,18 @@ func parseTimeValue(value any) (time.Time, error) {
 			return time.Time{}, err
 		}
 		return parsed.UTC(), nil
+	case int64:
+		return time.UnixMicro(typed).UTC(), nil
+	case int:
+		return time.UnixMicro(int64(typed)).UTC(), nil
+	case int32:
+		return time.UnixMicro(int64(typed)).UTC(), nil
+	case uint64:
+		return time.UnixMicro(int64(typed)).UTC(), nil
+	case uint32:
+		return time.UnixMicro(int64(typed)).UTC(), nil
+	case uint:
+		return time.UnixMicro(int64(typed)).UTC(), nil
 	default:
 		return time.Time{}, fmt.Errorf("invalid time value")
 	}

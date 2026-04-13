@@ -119,14 +119,54 @@ func mustMapList(params map[string]any, key string) []map[string]any {
 	}
 	rawList, ok := value.([]any)
 	if !ok {
+		if typed, ok := value.([]map[string]any); ok {
+			return typed
+		}
 		return nil
 	}
 	out := make([]map[string]any, 0, len(rawList))
 	for _, item := range rawList {
-		mapped, _ := item.(map[string]any)
+		mapped, _ := normalizeMap(item)
 		out = append(out, mapped)
 	}
 	return out
+}
+
+func normalizeMap(value any) (map[string]any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = normalizeValue(item)
+		}
+		return out, true
+	case map[any]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[fmt.Sprint(key)] = normalizeValue(item)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func normalizeValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any, map[any]any:
+		if mapped, ok := normalizeMap(value); ok {
+			return mapped
+		}
+		return nil
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, normalizeValue(item))
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func optionalString(params map[string]any, key string) string {
