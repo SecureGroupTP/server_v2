@@ -163,9 +163,14 @@ func (s *Service) RequestAuthChallenge(ctx context.Context, input RequestAuthCha
 	}
 
 	now := s.clock.Now()
-	challengePayload := make([]byte, challengeSize)
-	if _, err := s.randomReader.Read(challengePayload); err != nil {
-		return RequestAuthChallengeOutput{}, fmt.Errorf("generate challenge: %w", err)
+	serverNonceBytes := make([]byte, 8)
+	if _, err := s.randomReader.Read(serverNonceBytes); err != nil {
+		return RequestAuthChallengeOutput{}, fmt.Errorf("generate auth challenge nonce: %w", err)
+	}
+	expiresAt := now.Add(s.cfg.ChallengeTTL)
+	challengePayload, err := marshalAuthChallengePayload(expiresAt, randomUint64(serverNonceBytes), input.ClientNonce)
+	if err != nil {
+		return RequestAuthChallengeOutput{}, err
 	}
 
 	session := domainauth.Session{
@@ -175,7 +180,7 @@ func (s *Service) RequestAuthChallenge(ctx context.Context, input RequestAuthCha
 		DeviceID:         input.DeviceID,
 		ClientNonce:      append([]byte(nil), input.ClientNonce...),
 		ChallengePayload: challengePayload,
-		ExpiresAt:        now.Add(s.cfg.ChallengeTTL),
+		ExpiresAt:        expiresAt,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}

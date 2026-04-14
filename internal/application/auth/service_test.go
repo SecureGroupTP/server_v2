@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
 
 	domainauth "server_v2/internal/domain/auth"
@@ -33,7 +34,14 @@ func (g *sequenceUUIDGenerator) New() uuid.UUID {
 type fixedRandomReader struct{ data []byte }
 
 func (r fixedRandomReader) Read(p []byte) (int, error) {
-	copy(p, r.data)
+	if len(r.data) < len(p) {
+		copy(p, r.data)
+		for i := len(r.data); i < len(p); i++ {
+			p[i] = 0
+		}
+		return len(p), nil
+	}
+	copy(p, r.data[:len(p)])
 	return len(p), nil
 }
 
@@ -120,7 +128,7 @@ func TestServiceAuthHandshakeFlow(t *testing.T) {
 		Config{ChallengeTTL: 5 * time.Minute, EventRetention: 24 * time.Hour, EventBatchSize: 10},
 		fixedClock{now: now},
 		&sequenceUUIDGenerator{ids: []uuid.UUID{sessionID, eventID}},
-		fixedRandomReader{data: []byte("01234567890123456789012345678901")},
+		fixedRandomReader{data: []byte{1, 2, 3, 4, 5, 6, 7, 8}},
 		noopTxManager{},
 		sessions,
 		subscriptions,
@@ -145,6 +153,22 @@ func TestServiceAuthHandshakeFlow(t *testing.T) {
 	if len(sessions.created) != 1 {
 		t.Fatalf("expected one created session, got %d", len(sessions.created))
 	}
+	decodedChallenge, err := decodeChallengePayload(challenge.ChallengePayload)
+	if err != nil {
+		t.Fatalf("decode challenge payload: %v", err)
+	}
+	if decodedChallenge.Type != authenticationChallengeType {
+		t.Fatalf("unexpected challenge type: %q", decodedChallenge.Type)
+	}
+	if decodedChallenge.ExpirationTimestamp != uint64(challenge.ExpiresAt.UTC().UnixMicro()) {
+		t.Fatalf("unexpected challenge expiration timestamp: %d", decodedChallenge.ExpirationTimestamp)
+	}
+	if decodedChallenge.ServerNonce != randomUint64([]byte{1, 2, 3, 4, 5, 6, 7, 8}) {
+		t.Fatalf("unexpected server nonce: %d", decodedChallenge.ServerNonce)
+	}
+	if string(decodedChallenge.ClientNonce) != "nonce" {
+		t.Fatalf("unexpected client nonce: %q", decodedChallenge.ClientNonce)
+	}
 
 	signature := ed25519.Sign(privateKey, challenge.ChallengePayload)
 	solveResult, err := service.SolveAuthChallenge(context.Background(), SolveAuthChallengeInput{
@@ -163,6 +187,18 @@ func TestServiceAuthHandshakeFlow(t *testing.T) {
 	if len(sessions.touchedKeys) != 1 {
 		t.Fatalf("expected profile touch, got %d", len(sessions.touchedKeys))
 	}
+}
+
+func decodeChallengePayload(raw []byte) (authChallengePayload, error) {
+	dm, err := cbor.DecOptions{DupMapKey: cbor.DupMapKeyEnforcedAPF}.DecMode()
+	if err != nil {
+		return authChallengePayload{}, err
+	}
+	var payload authChallengePayload
+	if err := dm.Unmarshal(raw, &payload); err != nil {
+		return authChallengePayload{}, err
+	}
+	return payload, nil
 }
 
 func TestServicePullEventsMarksDelivered(t *testing.T) {
