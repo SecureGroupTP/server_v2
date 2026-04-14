@@ -215,6 +215,11 @@ func (s *Service) UploadKeyPackages(ctx context.Context, sessionID uuid.UUID, us
 			ExpiresAt:       expiresAt,
 		})
 	}
+	if len(records) > 0 {
+		if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
+			return nil, err
+		}
+	}
 	recordedCount, err := s.store.InsertKeyPackages(ctx, records)
 	if err != nil {
 		return nil, err

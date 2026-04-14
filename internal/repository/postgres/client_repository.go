@@ -191,7 +191,7 @@ func (r *ClientRepository) InsertKeyPackages(ctx context.Context, keyPackages []
 }
 
 func (r *ClientRepository) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte, now time.Time) ([]clientapi.KeyPackageRecord, error) {
-	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT DISTINCT ON (user_public_key, device_id) id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at FROM key_packages WHERE user_public_key = ANY($1) AND expires_at > $2 ORDER BY user_public_key, device_id, is_last_resort ASC, created_at ASC`, pqByteaArray(userPublicKeys), now)
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT DISTINCT ON (user_public_key, device_id) id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at FROM key_packages WHERE user_public_key = ANY($1) AND expires_at > $2 ORDER BY user_public_key, device_id, is_last_resort ASC, created_at DESC`, pqByteaArray(userPublicKeys), now)
 	if err != nil {
 		return nil, err
 	}
