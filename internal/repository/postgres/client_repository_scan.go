@@ -34,7 +34,7 @@ func scanInvitations(rows *sql.Rows) ([]clientapi.ChatInvitationRecord, error) {
 	var items []clientapi.ChatInvitationRecord
 	for rows.Next() {
 		var item clientapi.ChatInvitationRecord
-		if err := rows.Scan(&item.InvitationID, &item.RoomID, &item.InviterPublicKey, &item.InviteePublicKey, &item.State, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.InvitationID, &item.RoomID, &item.InviterPublicKey, &item.InviteePublicKey, &item.ExpiresAt, &item.InviteToken, &item.InviteTokenSignature, &item.State, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

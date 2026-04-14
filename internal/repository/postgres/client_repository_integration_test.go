@@ -110,3 +110,91 @@ func TestClientRepositorySearchProfilesPaginationAndBanStatus(t *testing.T) {
 		t.Fatalf("unexpected ban status: found=%v status=%#v", found, banStatus)
 	}
 }
+
+func TestClientRepositoryMlsArtifactsAndInvitationContract(t *testing.T) {
+	store := openTestStore(t)
+	repo := NewClientRepository(store.DB())
+	now := time.Date(2026, 4, 11, 19, 0, 0, 0, time.UTC)
+	user1 := []byte("dddddddddddddddddddddddddddddddd")
+	user2 := []byte("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+	roomID := uuid.New()
+	invitationID := uuid.New()
+	expiresAt := now.Add(15 * time.Minute)
+
+	if err := repo.UpdateProfile(context.Background(), user1, "@dora", "Dora", "", "bio", now); err != nil {
+		t.Fatalf("update profile 1: %v", err)
+	}
+	if err := repo.UpdateProfile(context.Background(), user2, "@eric", "Eric", "", "bio", now); err != nil {
+		t.Fatalf("update profile 2: %v", err)
+	}
+	if err := repo.CreateRoom(context.Background(), clientapi.ChatRoomRecord{RoomID: roomID, OwnerPublicKey: user1, Title: "direct", Visibility: clientapi.VisibilityPrivate, CreatedAt: now, UpdatedAt: now}, clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user1, Role: clientapi.RoleOwner, NotificationLevel: clientapi.NotificationAll, JoinedAt: now}); err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if err := repo.UpsertRoomMembership(context.Background(), clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user2, Role: clientapi.RoleMember, NotificationLevel: clientapi.NotificationAll, JoinedAt: now}); err != nil {
+		t.Fatalf("upsert membership: %v", err)
+	}
+	if err := repo.UpsertRoomGroupInfo(context.Background(), user1, clientapi.ChatRoomGroupInfoRecord{
+		RoomID:            roomID,
+		UploaderPublicKey: user1,
+		GroupInfoBytes:    []byte("group-info"),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("upsert group info: %v", err)
+	}
+	groupInfo, err := repo.GetRoomGroupInfo(context.Background(), roomID)
+	if err != nil {
+		t.Fatalf("get group info: %v", err)
+	}
+	if string(groupInfo.GroupInfoBytes) != "group-info" {
+		t.Fatalf("unexpected group info: %#v", groupInfo)
+	}
+
+	foundRoomID, found, err := repo.FindDirectRoomIDByUsers(context.Background(), user1, user2)
+	if err != nil {
+		t.Fatalf("find direct room: %v", err)
+	}
+	if !found || foundRoomID != roomID {
+		t.Fatalf("unexpected direct room lookup: found=%v room=%s", found, foundRoomID)
+	}
+
+	if err := repo.UpsertRoomWelcome(context.Background(), clientapi.ChatRoomWelcomeRecord{
+		RoomID:              roomID,
+		TargetUserPublicKey: user2,
+		SenderPublicKey:     user1,
+		WelcomeBytes:        []byte("welcome"),
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("upsert room welcome: %v", err)
+	}
+	welcome, err := repo.GetRoomWelcome(context.Background(), roomID, user2)
+	if err != nil {
+		t.Fatalf("get room welcome: %v", err)
+	}
+	if string(welcome.WelcomeBytes) != "welcome" {
+		t.Fatalf("unexpected welcome: %#v", welcome)
+	}
+
+	if err := repo.CreateInvitation(context.Background(), clientapi.ChatInvitationRecord{
+		InvitationID:         invitationID,
+		RoomID:               roomID,
+		InviterPublicKey:     user1,
+		InviteePublicKey:     user2,
+		ExpiresAt:            &expiresAt,
+		InviteToken:          []byte("token"),
+		InviteTokenSignature: []byte("sig"),
+		State:                clientapi.InvitationPending,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}); err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+	invitation, err := repo.GetInvitation(context.Background(), invitationID)
+	if err != nil {
+		t.Fatalf("get invitation: %v", err)
+	}
+	if invitation.ExpiresAt == nil || string(invitation.InviteToken) != "token" || string(invitation.InviteTokenSignature) != "sig" {
+		t.Fatalf("unexpected invitation payload: %#v", invitation)
+	}
+}

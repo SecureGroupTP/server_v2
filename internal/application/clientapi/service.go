@@ -257,8 +257,21 @@ func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID,
 }
 
 func (s *Service) SendWelcome(ctx context.Context, user []byte, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
-	_ = user
 	now := s.clock.Now()
+	if roomID, found, err := s.store.FindDirectRoomIDByUsers(ctx, user, targetUserPublicKey); err != nil {
+		return nil, err
+	} else if found {
+		if err := s.store.UpsertRoomWelcome(ctx, ChatRoomWelcomeRecord{
+			RoomID:              roomID,
+			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+			SenderPublicKey:     append([]byte(nil), user...),
+			WelcomeBytes:        append([]byte(nil), welcomeBytes...),
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", map[string]any{
 		"targetUserPublicKey": targetUserPublicKey,
 		"welcomeBytes":        welcomeBytes,
@@ -266,6 +279,87 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, targetUserPublic
 		return nil, err
 	}
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (s *Service) UploadGroupInfo(ctx context.Context, user []byte, roomID uuid.UUID, groupInfoBytes []byte) (map[string]any, error) {
+	now := s.clock.Now()
+	if err := s.store.UpsertRoomGroupInfo(ctx, user, ChatRoomGroupInfoRecord{
+		RoomID:            roomID,
+		UploaderPublicKey: append([]byte(nil), user...),
+		GroupInfoBytes:    append([]byte(nil), groupInfoBytes...),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		return nil, err
+	}
+	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (s *Service) FetchGroupInfo(ctx context.Context, roomID uuid.UUID) (map[string]any, error) {
+	room, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if room.Visibility != VisibilityPublic {
+		return nil, ErrForbidden
+	}
+	record, err := s.store.GetRoomGroupInfo(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"groupInfoBytes": record.GroupInfoBytes}, nil
+}
+
+func (s *Service) SendExternalCommit(ctx context.Context, user []byte, roomID uuid.UUID, commitBytes []byte) (map[string]any, error) {
+	now := s.clock.Now()
+	room, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if room.Visibility != VisibilityPublic {
+		return nil, ErrForbidden
+	}
+	if _, err := s.store.GetRoomGroupInfo(ctx, roomID); err != nil {
+		return nil, err
+	}
+
+	existingMembers, err := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		return s.store.UpsertRoomMembership(txCtx, ChatMemberRecord{
+			RoomID:            roomID,
+			UserPublicKey:     append([]byte(nil), user...),
+			Role:              RoleMember,
+			NotificationLevel: NotificationAll,
+			JoinedAt:          now,
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	for _, member := range existingMembers {
+		if string(member) == string(user) {
+			continue
+		}
+		_ = s.appendEvent(ctx, member, "mlsExternalCommitReceived", map[string]any{
+			"roomId":          roomID.String(),
+			"commitBytes":     commitBytes,
+			"joinerPublicKey": user,
+		})
+	}
+
+	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (s *Service) FetchWelcome(ctx context.Context, user []byte, roomID uuid.UUID) (map[string]any, error) {
+	record, err := s.store.GetRoomWelcome(ctx, roomID, user)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"welcomeBytes": record.WelcomeBytes}, nil
 }
 
 func (s *Service) ListFriends(ctx context.Context, user []byte, limit int, cursor string) (map[string]any, error) {
@@ -605,9 +699,20 @@ func (s *Service) DeleteChatMemberPermission(ctx context.Context, user []byte, p
 	return map[string]any{"deletedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) SendChatInvitation(ctx context.Context, user []byte, roomID uuid.UUID, invitee []byte) (map[string]any, error) {
+func (s *Service) SendChatInvitation(ctx context.Context, user []byte, roomID uuid.UUID, invitee []byte, expiresAt *time.Time, inviteToken []byte, inviteTokenSignature []byte) (map[string]any, error) {
 	now := s.clock.Now()
-	record := ChatInvitationRecord{InvitationID: s.uuidGen.New(), RoomID: roomID, InviterPublicKey: user, InviteePublicKey: invitee, State: InvitationPending, CreatedAt: now, UpdatedAt: now}
+	record := ChatInvitationRecord{
+		InvitationID:         s.uuidGen.New(),
+		RoomID:               roomID,
+		InviterPublicKey:     append([]byte(nil), user...),
+		InviteePublicKey:     append([]byte(nil), invitee...),
+		ExpiresAt:            expiresAt,
+		InviteToken:          append([]byte(nil), inviteToken...),
+		InviteTokenSignature: append([]byte(nil), inviteTokenSignature...),
+		State:                InvitationPending,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
 	if err := s.store.CreateInvitation(ctx, record); err != nil {
 		return nil, err
 	}
@@ -653,21 +758,42 @@ func (s *Service) ListIncomingChatInvitations(ctx context.Context, user []byte, 
 	return map[string]any{"items": invitationRecordsToMaps(records), "nextCursor": nextCursor}, nil
 }
 
-func (s *Service) AcceptChatInvitation(ctx context.Context, user []byte, invitationID uuid.UUID) (map[string]any, error) {
+func (s *Service) AcceptChatInvitation(ctx context.Context, user []byte, invitationID uuid.UUID, commitBytes []byte) (map[string]any, error) {
 	now := s.clock.Now()
+	existingMembers := make([][]byte, 0)
 	var record ChatInvitationRecord
+	if len(commitBytes) > 0 {
+		invitation, err := s.store.GetInvitation(ctx, invitationID)
+		if err != nil {
+			return nil, err
+		}
+		existingMembers, err = s.store.ListActiveRoomMemberPublicKeys(ctx, invitation.RoomID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var txErr error
 		record, txErr = s.store.UpdateInvitationState(txCtx, invitationID, user, InvitationAccepted, now, []int16{InvitationPending})
 		if txErr != nil {
 			return txErr
 		}
-		if err := s.store.JoinRoom(txCtx, ChatMemberRecord{RoomID: record.RoomID, UserPublicKey: user, Role: RoleMember, NotificationLevel: NotificationAll, JoinedAt: now}); err != nil {
+		if err := s.store.UpsertRoomMembership(txCtx, ChatMemberRecord{RoomID: record.RoomID, UserPublicKey: user, Role: RoleMember, NotificationLevel: NotificationAll, JoinedAt: now}); err != nil {
 			return err
 		}
 		return s.appendEvent(txCtx, record.InviterPublicKey, "room.invitationAccepted", map[string]any{"invitationId": invitationID.String(), "roomId": record.RoomID.String()})
 	}); err != nil {
 		return nil, err
+	}
+	for _, member := range existingMembers {
+		if string(member) == string(user) {
+			continue
+		}
+		_ = s.appendEvent(ctx, member, "mlsExternalCommitReceived", map[string]any{
+			"roomId":          record.RoomID.String(),
+			"commitBytes":     commitBytes,
+			"joinerPublicKey": user,
+		})
 	}
 	return map[string]any{"roomId": record.RoomID, "acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }

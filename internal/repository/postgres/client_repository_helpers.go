@@ -12,3 +12,10 @@ func containsState(values []int16, target int16) bool {
 func pqByteaArray(values [][]byte) [][]byte {
 	return values
 }
+
+func nullIfEmptyBytes(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
+}

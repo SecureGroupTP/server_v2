@@ -29,13 +29,20 @@ func roomToMap(record ChatRoomRecord) map[string]any {
 func invitationRecordsToMaps(records []ChatInvitationRecord) []map[string]any {
 	items := make([]map[string]any, 0, len(records))
 	for _, record := range records {
+		var expiresAt any
+		if record.ExpiresAt != nil {
+			expiresAt = record.ExpiresAt.UTC().Format(time.RFC3339Nano)
+		}
 		items = append(items, map[string]any{
-			"invitationId":     record.InvitationID,
-			"roomId":           record.RoomID,
-			"inviterPublicKey": record.InviterPublicKey,
-			"inviteePublicKey": record.InviteePublicKey,
-			"state":            int(record.State),
-			"createdAt":        record.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"invitationId":         record.InvitationID,
+			"roomId":               record.RoomID,
+			"inviterPublicKey":     record.InviterPublicKey,
+			"inviteePublicKey":     record.InviteePublicKey,
+			"expiresAt":            expiresAt,
+			"inviteToken":          record.InviteToken,
+			"inviteTokenSignature": record.InviteTokenSignature,
+			"state":                int(record.State),
+			"createdAt":            record.CreatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return items

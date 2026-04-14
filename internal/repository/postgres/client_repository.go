@@ -212,6 +212,117 @@ func (r *ClientRepository) DeleteKeyPackagesByUserDevice(ctx context.Context, us
 	return err
 }
 
+func (r *ClientRepository) UpsertRoomGroupInfo(ctx context.Context, userPublicKey []byte, groupInfo clientapi.ChatRoomGroupInfoRecord) error {
+	if _, err := r.ensureMember(ctx, groupInfo.RoomID, userPublicKey); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_room_group_infos (room_id, uploader_public_key, group_info_bytes, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (room_id)
+DO UPDATE SET uploader_public_key = EXCLUDED.uploader_public_key, group_info_bytes = EXCLUDED.group_info_bytes, updated_at = EXCLUDED.updated_at
+`, groupInfo.RoomID, groupInfo.UploaderPublicKey, groupInfo.GroupInfoBytes, groupInfo.CreatedAt, groupInfo.UpdatedAt)
+	return err
+}
+
+func (r *ClientRepository) GetRoomGroupInfo(ctx context.Context, roomID uuid.UUID) (clientapi.ChatRoomGroupInfoRecord, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT room_id, uploader_public_key, group_info_bytes, created_at, updated_at
+FROM chat_room_group_infos
+WHERE room_id = $1
+`, roomID)
+	var out clientapi.ChatRoomGroupInfoRecord
+	if err := row.Scan(&out.RoomID, &out.UploaderPublicKey, &out.GroupInfoBytes, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatRoomGroupInfoRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ChatRoomGroupInfoRecord{}, err
+	}
+	return out, nil
+}
+
+func (r *ClientRepository) FindDirectRoomIDByUsers(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (uuid.UUID, bool, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `
+SELECT r.room_id
+FROM chat_rooms r
+JOIN chat_members left_member
+  ON left_member.room_id = r.room_id
+ AND left_member.user_public_key = $1
+ AND left_member.left_at IS NULL
+JOIN chat_members right_member
+  ON right_member.room_id = r.room_id
+ AND right_member.user_public_key = $2
+ AND right_member.left_at IS NULL
+WHERE r.deleted_at IS NULL
+  AND (
+    SELECT COUNT(*)
+    FROM chat_members members
+    WHERE members.room_id = r.room_id
+      AND members.left_at IS NULL
+  ) = 2
+ORDER BY r.updated_at DESC, r.room_id DESC
+LIMIT 2
+`, leftUserPublicKey, rightUserPublicKey)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var roomID uuid.UUID
+		if err := rows.Scan(&roomID); err != nil {
+			return uuid.Nil, false, err
+		}
+		ids = append(ids, roomID)
+	}
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, false, err
+	}
+	if len(ids) != 1 {
+		return uuid.Nil, false, nil
+	}
+	return ids[0], true, nil
+}
+
+func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, welcome clientapi.ChatRoomWelcomeRecord) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_room_welcomes (room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (room_id, target_user_public_key)
+DO UPDATE SET sender_public_key = EXCLUDED.sender_public_key, welcome_bytes = EXCLUDED.welcome_bytes, updated_at = EXCLUDED.updated_at
+`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
+	return err
+}
+
+func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
+	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+
+	var activeMembers int64
+	if err := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, roomID).Scan(&activeMembers); err != nil {
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+	if activeMembers != 2 {
+		return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrForbidden
+	}
+
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at
+FROM chat_room_welcomes
+WHERE room_id = $1 AND target_user_public_key = $2
+`, roomID, targetUserPublicKey)
+	var out clientapi.ChatRoomWelcomeRecord
+	if err := row.Scan(&out.RoomID, &out.TargetUserPublicKey, &out.SenderPublicKey, &out.WelcomeBytes, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrNotFound
+		}
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+	return out, nil
+}
+
 func (r *ClientRepository) ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]clientapi.FriendRecord, error) {
 	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT id, user_public_key, friend_public_key, accepted_at FROM friends WHERE user_public_key = $1 ORDER BY accepted_at DESC, id DESC LIMIT $2 OFFSET $3`, userPublicKey, limit, offset)
 	if err != nil {
@@ -433,6 +544,14 @@ func (r *ClientRepository) JoinRoom(ctx context.Context, member clientapi.ChatMe
 	return err
 }
 
+func (r *ClientRepository) UpsertRoomMembership(ctx context.Context, member clientapi.ChatMemberRecord) error {
+	if _, err := r.GetRoom(ctx, member.RoomID); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_members (room_id, user_public_key, role, notification_level, joined_at, left_at) VALUES ($1,$2,$3,$4,$5,NULL) ON CONFLICT (room_id, user_public_key) DO UPDATE SET left_at = NULL, role = EXCLUDED.role, notification_level = EXCLUDED.notification_level`, member.RoomID, member.UserPublicKey, member.Role, member.NotificationLevel, member.JoinedAt)
+	return err
+}
+
 func (r *ClientRepository) LeaveRoom(ctx context.Context, roomID uuid.UUID, userPublicKey []byte, leftAt time.Time) error {
 	res, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET left_at = $3 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, userPublicKey, leftAt)
 	if err != nil {
@@ -549,15 +668,19 @@ func (r *ClientRepository) CreateInvitation(ctx context.Context, invitation clie
 	if err := r.ensureRoomAdmin(ctx, invitation.RoomID, invitation.InviterPublicKey); err != nil {
 		return err
 	}
-	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_invitations (invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, invitation.InvitationID, invitation.RoomID, invitation.InviterPublicKey, invitation.InviteePublicKey, invitation.State, invitation.CreatedAt, invitation.UpdatedAt)
+	_, err := r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_invitations (invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, invite_token, invite_token_signature, state, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, invitation.InvitationID, invitation.RoomID, invitation.InviterPublicKey, invitation.InviteePublicKey, invitation.ExpiresAt, nullIfEmptyBytes(invitation.InviteToken), nullIfEmptyBytes(invitation.InviteTokenSignature), invitation.State, invitation.CreatedAt, invitation.UpdatedAt)
 	return err
 }
 
+func (r *ClientRepository) GetInvitation(ctx context.Context, invitationID uuid.UUID) (clientapi.ChatInvitationRecord, error) {
+	return r.getInvitation(ctx, invitationID)
+}
+
 func (r *ClientRepository) ListSentInvitations(ctx context.Context, inviterPublicKey []byte, roomID *uuid.UUID, limit int, offset int) ([]clientapi.ChatInvitationRecord, error) {
-	query := `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`
+	query := `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`
 	args := []any{inviterPublicKey, limit, offset}
 	if roomID != nil {
-		query = `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 AND room_id = $2 ORDER BY created_at DESC, invitation_id DESC LIMIT $3 OFFSET $4`
+		query = `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at FROM chat_invitations WHERE inviter_public_key = $1 AND room_id = $2 ORDER BY created_at DESC, invitation_id DESC LIMIT $3 OFFSET $4`
 		args = []any{inviterPublicKey, *roomID, limit, offset}
 	}
 	rows, err := r.dbtx(ctx).QueryContext(ctx, query, args...)
@@ -569,7 +692,7 @@ func (r *ClientRepository) ListSentInvitations(ctx context.Context, inviterPubli
 }
 
 func (r *ClientRepository) ListIncomingInvitations(ctx context.Context, inviteePublicKey []byte, limit int, offset int) ([]clientapi.ChatInvitationRecord, error) {
-	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE invitee_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`, inviteePublicKey, limit, offset)
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at FROM chat_invitations WHERE invitee_public_key = $1 ORDER BY created_at DESC, invitation_id DESC LIMIT $2 OFFSET $3`, inviteePublicKey, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -588,24 +711,44 @@ func (r *ClientRepository) UpdateInvitationState(ctx context.Context, invitation
 	if !containsState(allowedCurrentStates, record.State) {
 		return clientapi.ChatInvitationRecord{}, clientapi.ErrConflict
 	}
-	row := r.dbtx(ctx).QueryRowContext(ctx, `UPDATE chat_invitations SET state = $2, updated_at = $3 WHERE invitation_id = $1 RETURNING invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at`, invitationID, targetState, updatedAt)
+	row := r.dbtx(ctx).QueryRowContext(ctx, `UPDATE chat_invitations SET state = $2, updated_at = $3 WHERE invitation_id = $1 RETURNING invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at`, invitationID, targetState, updatedAt)
 	var out clientapi.ChatInvitationRecord
-	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.ExpiresAt, &out.InviteToken, &out.InviteTokenSignature, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		return clientapi.ChatInvitationRecord{}, err
 	}
 	return out, nil
 }
 
 func (r *ClientRepository) getInvitation(ctx context.Context, invitationID uuid.UUID) (clientapi.ChatInvitationRecord, error) {
-	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, state, created_at, updated_at FROM chat_invitations WHERE invitation_id = $1`, invitationID)
+	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at FROM chat_invitations WHERE invitation_id = $1`, invitationID)
 	var out clientapi.ChatInvitationRecord
-	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.ExpiresAt, &out.InviteToken, &out.InviteTokenSignature, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return clientapi.ChatInvitationRecord{}, clientapi.ErrNotFound
 		}
 		return clientapi.ChatInvitationRecord{}, err
 	}
 	return out, nil
+}
+
+func (r *ClientRepository) FindPendingInvitation(ctx context.Context, roomID uuid.UUID, inviteePublicKey []byte) (clientapi.ChatInvitationRecord, bool, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT invitation_id, room_id, inviter_public_key, invitee_public_key, expires_at, COALESCE(invite_token, ''::bytea), COALESCE(invite_token_signature, ''::bytea), state, created_at, updated_at
+FROM chat_invitations
+WHERE room_id = $1
+  AND invitee_public_key = $2
+  AND state = $3
+ORDER BY created_at DESC
+LIMIT 1
+`, roomID, inviteePublicKey, clientapi.InvitationPending)
+	var out clientapi.ChatInvitationRecord
+	if err := row.Scan(&out.InvitationID, &out.RoomID, &out.InviterPublicKey, &out.InviteePublicKey, &out.ExpiresAt, &out.InviteToken, &out.InviteTokenSignature, &out.State, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clientapi.ChatInvitationRecord{}, false, nil
+		}
+		return clientapi.ChatInvitationRecord{}, false, err
+	}
+	return out, true, nil
 }
 
 func (r *ClientRepository) CreateMessage(ctx context.Context, message clientapi.MessageRecord) error {

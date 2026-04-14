@@ -27,9 +27,12 @@ func (s *sequenceUUID) New() uuid.UUID { id := s.ids[0]; s.ids = s.ids[1:]; retu
 type storeMock struct {
 	profileUpdated bool
 	friendRequest  FriendRequestRecord
+	invitation     ChatInvitationRecord
 	roomCreated    ChatRoomRecord
 	memberCreated  ChatMemberRecord
 	messageCreated MessageRecord
+	groupInfo      ChatRoomGroupInfoRecord
+	welcome        ChatRoomWelcomeRecord
 	banStatus      BanStatusRecord
 	hasBanStatus   bool
 	profiles       []ProfileRecord
@@ -71,6 +74,26 @@ func (s *storeMock) FetchKeyPackages(context.Context, [][]byte, time.Time) ([]Ke
 	return nil, nil
 }
 func (s *storeMock) DeleteKeyPackagesByUserDevice(context.Context, []byte, string) error { return nil }
+func (s *storeMock) UpsertRoomGroupInfo(_ context.Context, _ []byte, groupInfo ChatRoomGroupInfoRecord) error {
+	s.groupInfo = groupInfo
+	return nil
+}
+func (s *storeMock) GetRoomGroupInfo(context.Context, uuid.UUID) (ChatRoomGroupInfoRecord, error) {
+	return s.groupInfo, nil
+}
+func (s *storeMock) FindDirectRoomIDByUsers(context.Context, []byte, []byte) (uuid.UUID, bool, error) {
+	if s.roomCreated.RoomID == uuid.Nil {
+		return uuid.Nil, false, nil
+	}
+	return s.roomCreated.RoomID, true, nil
+}
+func (s *storeMock) UpsertRoomWelcome(_ context.Context, welcome ChatRoomWelcomeRecord) error {
+	s.welcome = welcome
+	return nil
+}
+func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
+	return s.welcome, nil
+}
 func (s *storeMock) ListFriends(context.Context, []byte, int, int) ([]FriendRecord, error) {
 	return s.friends, nil
 }
@@ -104,7 +127,7 @@ func (s *storeMock) ListRooms(context.Context, []byte, int, int) ([]ChatRoomReco
 }
 
 func (s *storeMock) GetRoom(context.Context, uuid.UUID) (ChatRoomRecord, error) {
-	return ChatRoomRecord{}, nil
+	return s.roomCreated, nil
 }
 
 func (s *storeMock) SearchRooms(context.Context, string, int, int) ([]ChatRoomRecord, error) {
@@ -122,7 +145,11 @@ func (s *storeMock) AddRoomState(context.Context, []byte, ChatRoomStateRecord) e
 func (s *storeMock) FetchRoomState(context.Context, []byte, uuid.UUID, int64) (ChatRoomStateRecord, error) {
 	return ChatRoomStateRecord{}, nil
 }
-func (s *storeMock) JoinRoom(context.Context, ChatMemberRecord) error              { return nil }
+func (s *storeMock) JoinRoom(context.Context, ChatMemberRecord) error { return nil }
+func (s *storeMock) UpsertRoomMembership(_ context.Context, member ChatMemberRecord) error {
+	s.memberCreated = member
+	return nil
+}
 func (s *storeMock) LeaveRoom(context.Context, uuid.UUID, []byte, time.Time) error { return nil }
 func (s *storeMock) KickMember(context.Context, []byte, uuid.UUID, []byte, time.Time) error {
 	return nil
@@ -151,7 +178,13 @@ func (s *storeMock) UpdateMemberPermission(context.Context, []byte, uuid.UUID, b
 func (s *storeMock) DeleteMemberPermission(context.Context, []byte, uuid.UUID, time.Time) error {
 	return nil
 }
-func (s *storeMock) CreateInvitation(context.Context, ChatInvitationRecord) error { return nil }
+func (s *storeMock) CreateInvitation(_ context.Context, invitation ChatInvitationRecord) error {
+	s.invitation = invitation
+	return nil
+}
+func (s *storeMock) GetInvitation(context.Context, uuid.UUID) (ChatInvitationRecord, error) {
+	return s.invitation, nil
+}
 func (s *storeMock) ListSentInvitations(context.Context, []byte, *uuid.UUID, int, int) ([]ChatInvitationRecord, error) {
 	return nil, nil
 }
@@ -161,7 +194,13 @@ func (s *storeMock) ListIncomingInvitations(context.Context, []byte, int, int) (
 }
 
 func (s *storeMock) UpdateInvitationState(context.Context, uuid.UUID, []byte, int16, time.Time, []int16) (ChatInvitationRecord, error) {
-	return ChatInvitationRecord{}, nil
+	return s.invitation, nil
+}
+func (s *storeMock) FindPendingInvitation(context.Context, uuid.UUID, []byte) (ChatInvitationRecord, bool, error) {
+	if s.invitation.InvitationID == uuid.Nil {
+		return ChatInvitationRecord{}, false, nil
+	}
+	return s.invitation, true, nil
 }
 func (s *storeMock) CreateMessage(_ context.Context, message MessageRecord) error {
 	s.messageCreated = message
@@ -279,7 +318,7 @@ func TestServiceGetProfileIncludesBanStatus(t *testing.T) {
 			BannedAt: now,
 		},
 	}
-	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -306,7 +345,7 @@ func TestServiceSearchProfilesProvidesCursor(t *testing.T) {
 			{PublicKey: bytes32(3), Username: "u3", DisplayName: "Three"},
 		},
 	}
-	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -333,7 +372,7 @@ func TestServiceListFriendsIncludesTotalCount(t *testing.T) {
 		},
 		friendCount: 7,
 	}
-	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -389,7 +428,8 @@ func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
 	now := time.Date(2026, 4, 11, 21, 30, 0, 0, time.UTC)
 	target := bytes32(8)
 	events := &eventAppenderMock{}
-	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{}, events, sessionLookupMock{})
+	roomID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{roomCreated: ChatRoomRecord{RoomID: roomID}}, events, sessionLookupMock{})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -414,6 +454,113 @@ func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
 	payloadBytes, ok := events.events[0].Payload["welcomeBytes"].([]byte)
 	if !ok || string(payloadBytes) != string(welcome) {
 		t.Fatalf("unexpected welcome payload: %#v", events.events[0].Payload)
+	}
+}
+
+func TestServiceUploadGroupInfoStoresLatestBytes(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 45, 0, 0, time.UTC)
+	roomID := uuid.MustParse("12121212-1212-1212-1212-121212121212")
+	store := &storeMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.UploadGroupInfo(context.Background(), bytes32(1), roomID, []byte("group-info"))
+	if err != nil {
+		t.Fatalf("upload group info: %v", err)
+	}
+	if response["acceptedAt"] == nil {
+		t.Fatalf("expected acceptedAt: %#v", response)
+	}
+	if store.groupInfo.RoomID != roomID || string(store.groupInfo.GroupInfoBytes) != "group-info" {
+		t.Fatalf("unexpected stored group info: %#v", store.groupInfo)
+	}
+}
+
+func TestServiceSendExternalCommitJoinsAndAppendsEvent(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 50, 0, 0, time.UTC)
+	roomID := uuid.MustParse("13131313-1313-1313-1313-131313131313")
+	actor := bytes32(1)
+	member := bytes32(2)
+	store := &storeMock{
+		roomCreated: ChatRoomRecord{RoomID: roomID, Visibility: VisibilityPublic},
+		groupInfo:   ChatRoomGroupInfoRecord{RoomID: roomID, GroupInfoBytes: []byte("group-info")},
+		roomMembers: [][]byte{member},
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.SendExternalCommit(context.Background(), actor, roomID, []byte("commit"))
+	if err != nil {
+		t.Fatalf("send external commit: %v", err)
+	}
+	if response["acceptedAt"] == nil {
+		t.Fatalf("expected acceptedAt: %#v", response)
+	}
+	if store.memberCreated.RoomID != roomID || string(store.memberCreated.UserPublicKey) != string(actor) {
+		t.Fatalf("unexpected membership upsert: %#v", store.memberCreated)
+	}
+	if len(events.events) != 1 || events.events[0].EventType != "mlsExternalCommitReceived" {
+		t.Fatalf("unexpected events: %#v", events.events)
+	}
+}
+
+func TestServiceSendChatInvitationStoresOptionalContractFields(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 55, 0, 0, time.UTC)
+	roomID := uuid.MustParse("14141414-1414-1414-1414-141414141414")
+	expiresAt := now.Add(10 * time.Minute)
+	store := &storeMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = service.SendChatInvitation(context.Background(), bytes32(1), roomID, bytes32(2), &expiresAt, []byte("token"), []byte("sig"))
+	if err != nil {
+		t.Fatalf("send chat invitation: %v", err)
+	}
+	if store.invitation.RoomID != roomID || string(store.invitation.InviteToken) != "token" || string(store.invitation.InviteTokenSignature) != "sig" {
+		t.Fatalf("unexpected invitation: %#v", store.invitation)
+	}
+	if store.invitation.ExpiresAt == nil || !store.invitation.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected invitation expiry: %#v", store.invitation.ExpiresAt)
+	}
+}
+
+func TestServiceAcceptChatInvitationAppendsExternalCommitEvent(t *testing.T) {
+	now := time.Date(2026, 4, 11, 22, 10, 0, 0, time.UTC)
+	roomID := uuid.MustParse("15151515-1515-1515-1515-151515151515")
+	invitationID := uuid.MustParse("16161616-1616-1616-1616-161616161616")
+	joiner := bytes32(3)
+	inviter := bytes32(4)
+	store := &storeMock{
+		invitation: ChatInvitationRecord{
+			InvitationID:     invitationID,
+			RoomID:           roomID,
+			InviterPublicKey: inviter,
+			InviteePublicKey: joiner,
+			State:            InvitationPending,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		},
+		roomMembers: [][]byte{inviter},
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = service.AcceptChatInvitation(context.Background(), joiner, invitationID, []byte("commit"))
+	if err != nil {
+		t.Fatalf("accept chat invitation: %v", err)
+	}
+	if len(events.events) != 2 {
+		t.Fatalf("expected acceptance and external commit events, got %d", len(events.events))
 	}
 }
 

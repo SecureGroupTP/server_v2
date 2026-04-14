@@ -3,6 +3,7 @@ package clientrpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
@@ -208,4 +209,43 @@ func optionalBool(params map[string]any, key string) bool {
 	}
 	result, _ := value.(bool)
 	return result
+}
+
+func optionalTimePtr(params map[string]any, key string) *time.Time {
+	value, ok := params[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case time.Time:
+		parsed := typed.UTC()
+		return &parsed
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, typed)
+		if err != nil {
+			return nil
+		}
+		parsed = parsed.UTC()
+		return &parsed
+	case int64:
+		parsed := time.UnixMicro(typed).UTC()
+		return &parsed
+	case int:
+		parsed := time.UnixMicro(int64(typed)).UTC()
+		return &parsed
+	case int32:
+		parsed := time.UnixMicro(int64(typed)).UTC()
+		return &parsed
+	case uint64:
+		parsed := time.UnixMicro(int64(typed)).UTC()
+		return &parsed
+	case uint32:
+		parsed := time.UnixMicro(int64(typed)).UTC()
+		return &parsed
+	case uint:
+		parsed := time.UnixMicro(int64(typed)).UTC()
+		return &parsed
+	default:
+		return nil
+	}
 }

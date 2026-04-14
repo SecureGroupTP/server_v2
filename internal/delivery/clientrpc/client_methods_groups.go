@@ -35,6 +35,14 @@ func (h *Handler) handleDeviceAndMLSMethods(ctx context.Context, rpcCall string,
 		return h.clientService.SendCommit(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "commitBytes"))
 	case "sendWelcome":
 		return h.clientService.SendWelcome(ctx, state.UserPublicKey, mustBytes(params, "targetUserPublicKey"), mustBytes(params, "welcomeBytes"))
+	case "uploadGroupInfo":
+		return h.clientService.UploadGroupInfo(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "groupInfoBytes"))
+	case "fetchGroupInfo":
+		return h.clientService.FetchGroupInfo(ctx, mustUUID(params, "roomId"))
+	case "sendExternalCommit":
+		return h.clientService.SendExternalCommit(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "commitBytes"))
+	case "fetchWelcome":
+		return h.clientService.FetchWelcome(ctx, state.UserPublicKey, mustUUID(params, "roomId"))
 	default:
 		return nil, nil
 	}
@@ -116,7 +124,7 @@ func (h *Handler) handleMemberMethods(ctx context.Context, rpcCall string, param
 func (h *Handler) handleInvitationMethods(ctx context.Context, rpcCall string, params map[string]any, state sessionState) (map[string]any, error) {
 	switch rpcCall {
 	case "sendChatInvitation":
-		return h.clientService.SendChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "inviteePublicKey"))
+		return h.clientService.SendChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "inviteePublicKey"), optionalTimePtr(params, "expiresAt"), optionalBytes(params, "inviteToken"), optionalBytes(params, "inviteTokenSignature"))
 	case "revokeChatInvitation":
 		return h.clientService.RevokeChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "invitationId"))
 	case "listSentChatInvitations":
@@ -124,7 +132,7 @@ func (h *Handler) handleInvitationMethods(ctx context.Context, rpcCall string, p
 	case "listIncomingChatInvitations":
 		return h.clientService.ListIncomingChatInvitations(ctx, state.UserPublicKey, optionalInt(params, "limit"), optionalString(params, "cursor"))
 	case "acceptChatInvitation":
-		return h.clientService.AcceptChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "invitationId"))
+		return h.clientService.AcceptChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "invitationId"), optionalBytes(params, "commitBytes"))
 	case "declineChatInvitation":
 		return h.clientService.DeclineChatInvitation(ctx, state.UserPublicKey, mustUUID(params, "invitationId"))
 	default:

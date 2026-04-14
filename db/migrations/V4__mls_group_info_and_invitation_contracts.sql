@@ -1,0 +1,33 @@
+CREATE TABLE IF NOT EXISTS chat_room_group_infos (
+  room_id UUID PRIMARY KEY REFERENCES chat_rooms(room_id) ON DELETE CASCADE,
+  uploader_public_key BYTEA NOT NULL,
+  group_info_bytes BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chat_room_group_infos_uploader_public_key_length CHECK (octet_length(uploader_public_key) = 32),
+  CONSTRAINT chat_room_group_infos_group_info_bytes_non_empty CHECK (octet_length(group_info_bytes) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS chat_room_group_infos_updated_at_idx
+  ON chat_room_group_infos (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_room_welcomes (
+  room_id UUID NOT NULL REFERENCES chat_rooms(room_id) ON DELETE CASCADE,
+  target_user_public_key BYTEA NOT NULL,
+  sender_public_key BYTEA NOT NULL,
+  welcome_bytes BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (room_id, target_user_public_key),
+  CONSTRAINT chat_room_welcomes_target_user_public_key_length CHECK (octet_length(target_user_public_key) = 32),
+  CONSTRAINT chat_room_welcomes_sender_public_key_length CHECK (octet_length(sender_public_key) = 32),
+  CONSTRAINT chat_room_welcomes_welcome_bytes_non_empty CHECK (octet_length(welcome_bytes) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS chat_room_welcomes_updated_at_idx
+  ON chat_room_welcomes (updated_at DESC);
+
+ALTER TABLE chat_invitations
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS invite_token BYTEA,
+  ADD COLUMN IF NOT EXISTS invite_token_signature BYTEA;
