@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -242,47 +243,57 @@ WHERE room_id = $1
 }
 
 func (r *ClientRepository) FindDirectRoomIDByUsers(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (uuid.UUID, bool, error) {
-	rows, err := r.dbtx(ctx).QueryContext(ctx, `
-SELECT r.room_id
-FROM chat_rooms r
-JOIN chat_members left_member
-  ON left_member.room_id = r.room_id
- AND left_member.user_public_key = $1
- AND left_member.left_at IS NULL
-JOIN chat_members right_member
-  ON right_member.room_id = r.room_id
- AND right_member.user_public_key = $2
- AND right_member.left_at IS NULL
-WHERE r.deleted_at IS NULL
-  AND (
-    SELECT COUNT(*)
-    FROM chat_members members
-    WHERE members.room_id = r.room_id
-      AND members.left_at IS NULL
-  ) = 2
-ORDER BY r.updated_at DESC, r.room_id DESC
-LIMIT 2
-`, leftUserPublicKey, rightUserPublicKey)
-	if err != nil {
-		return uuid.Nil, false, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var roomID uuid.UUID
-		if err := rows.Scan(&roomID); err != nil {
-			return uuid.Nil, false, err
+	left, right := orderedPublicKeyPair(leftUserPublicKey, rightUserPublicKey)
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT d.room_id
+FROM direct_rooms d
+JOIN chat_rooms r ON r.room_id = d.room_id
+WHERE d.left_user_public_key = $1
+  AND d.right_user_public_key = $2
+  AND r.deleted_at IS NULL
+`, left, right)
+	var roomID uuid.UUID
+	if err := row.Scan(&roomID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return uuid.Nil, false, nil
 		}
-		ids = append(ids, roomID)
-	}
-	if err := rows.Err(); err != nil {
 		return uuid.Nil, false, err
 	}
-	if len(ids) != 1 {
-		return uuid.Nil, false, nil
+	return roomID, true, nil
+}
+
+func (r *ClientRepository) CreateDirectRoom(ctx context.Context, room clientapi.ChatRoomRecord, left clientapi.ChatMemberRecord, right clientapi.ChatMemberRecord, direct clientapi.DirectRoomRecord) error {
+	if err := r.CreateRoom(ctx, room, left); err != nil {
+		return err
 	}
-	return ids[0], true, nil
+	if _, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO direct_rooms (room_id, left_user_public_key, right_user_public_key, created_at)
+VALUES ($1, $2, $3, $4)
+`, direct.RoomID, direct.LeftUserPublicKey, direct.RightUserPublicKey, direct.CreatedAt); err != nil {
+		return err
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_members (room_id, user_public_key, role, notification_level, joined_at)
+VALUES ($1, $2, $3, $4, $5)
+`, right.RoomID, right.UserPublicKey, right.Role, right.NotificationLevel, right.JoinedAt)
+	return err
+}
+
+func (r *ClientRepository) IsDirectRoom(ctx context.Context, roomID uuid.UUID) (bool, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM direct_rooms d
+  JOIN chat_rooms r ON r.room_id = d.room_id
+  WHERE d.room_id = $1
+    AND r.deleted_at IS NULL
+)
+`, roomID)
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, welcome clientapi.ChatRoomWelcomeRecord) error {
@@ -298,6 +309,14 @@ DO UPDATE SET sender_public_key = EXCLUDED.sender_public_key, welcome_bytes = EX
 func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
 	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
 		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+
+	direct, err := r.IsDirectRoom(ctx, roomID)
+	if err != nil {
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+	if !direct {
+		return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrForbidden
 	}
 
 	var activeMembers int64
@@ -321,6 +340,25 @@ WHERE room_id = $1 AND target_user_public_key = $2
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
 	return out, nil
+}
+
+func (r *ClientRepository) AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM friends left_friend
+  JOIN friends right_friend
+    ON right_friend.user_public_key = left_friend.friend_public_key
+   AND right_friend.friend_public_key = left_friend.user_public_key
+  WHERE left_friend.user_public_key = $1
+    AND left_friend.friend_public_key = $2
+)
+`, leftUserPublicKey, rightUserPublicKey)
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (r *ClientRepository) ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]clientapi.FriendRecord, error) {
@@ -875,6 +913,13 @@ func (r *ClientRepository) ensureRoomAdmin(ctx context.Context, roomID uuid.UUID
 		return clientapi.ErrForbidden
 	}
 	return nil
+}
+
+func orderedPublicKeyPair(left []byte, right []byte) ([]byte, []byte) {
+	if bytes.Compare(left, right) <= 0 {
+		return append([]byte(nil), left...), append([]byte(nil), right...)
+	}
+	return append([]byte(nil), right...), append([]byte(nil), left...)
 }
 
 var _ clientapi.Store = (*ClientRepository)(nil)

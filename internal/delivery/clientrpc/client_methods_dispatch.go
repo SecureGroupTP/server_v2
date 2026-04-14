@@ -13,7 +13,7 @@ func (h *Handler) dispatchClientMethod(ctx context.Context, rpcCall string, para
 		return h.handleDeviceAndMLSMethods(ctx, rpcCall, params, state)
 	case "listFriends", "removeFriend", "sendFriendRequest", "acceptFriendRequest", "declineFriendRequest", "cancelFriendRequest", "listFriendRequests":
 		return h.handleFriendMethods(ctx, rpcCall, params, state)
-	case "createChatRoom", "listChatRooms", "getChatRoom", "searchChatRooms", "syncChatRoom", "updateChatRoom", "updateChatRoomState", "fetchChatRoomState", "deleteChatRoom", "getChatRoomAvatar":
+	case "createChatRoom", "createDirectRoom", "listChatRooms", "getChatRoom", "searchChatRooms", "syncChatRoom", "updateChatRoom", "updateChatRoomState", "fetchChatRoomState", "deleteChatRoom", "getChatRoomAvatar":
 		return h.handleRoomMethods(ctx, rpcCall, params, state)
 	case "joinChatRoom", "leaveChatRoom", "kickChatMember", "listChatMembers", "updateChatMemberRole", "createChatMemberPermission", "listChatMemberPermissions", "updateChatMemberPermission", "deleteChatMemberPermission":
 		return h.handleMemberMethods(ctx, rpcCall, params, state)

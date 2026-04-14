@@ -1,6 +1,7 @@
 package clientapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -264,17 +265,21 @@ func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID,
 func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
 	now := s.clock.Now()
 	var roomID uuid.UUID
-	var found bool
+	var shouldStore bool
 	if requestedRoomID != nil && *requestedRoomID != uuid.Nil {
 		roomID = *requestedRoomID
-		found = true
+		direct, err := s.store.IsDirectRoom(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		shouldStore = direct
 	} else if directRoomID, directFound, err := s.store.FindDirectRoomIDByUsers(ctx, user, targetUserPublicKey); err != nil {
 		return nil, err
 	} else {
 		roomID = directRoomID
-		found = directFound
+		shouldStore = directFound
 	}
-	if found {
+	if shouldStore {
 		if err := s.store.UpsertRoomWelcome(ctx, ChatRoomWelcomeRecord{
 			RoomID:              roomID,
 			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
@@ -369,6 +374,13 @@ func (s *Service) SendExternalCommit(ctx context.Context, user []byte, roomID uu
 }
 
 func (s *Service) FetchWelcome(ctx context.Context, user []byte, roomID uuid.UUID) (map[string]any, error) {
+	direct, err := s.store.IsDirectRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !direct {
+		return nil, ErrForbidden
+	}
 	record, err := s.store.GetRoomWelcome(ctx, roomID, user)
 	if err != nil {
 		return nil, err
@@ -508,6 +520,86 @@ func (s *Service) CreateChatRoom(ctx context.Context, user []byte, title string,
 		return nil, err
 	}
 	return map[string]any{"roomId": roomID, "createdAt": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (s *Service) CreateDirectRoom(ctx context.Context, user []byte, target []byte) (map[string]any, error) {
+	if len(target) != ed25519.PublicKeySize {
+		return nil, domainauth.ErrInvalidPublicKey
+	}
+	if bytes.Equal(user, target) {
+		return nil, ErrForbidden
+	}
+
+	friends, err := s.store.AreFriends(ctx, user, target)
+	if err != nil {
+		return nil, err
+	}
+	if !friends {
+		return nil, ErrForbidden
+	}
+
+	if roomID, found, err := s.store.FindDirectRoomIDByUsers(ctx, user, target); err != nil {
+		return nil, err
+	} else if found {
+		return map[string]any{"roomId": roomID, "alreadyExisted": true, "createdAt": nil}, nil
+	}
+
+	keyPackages, err := s.store.FetchKeyPackages(ctx, [][]byte{target}, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
+	if len(keyPackages) == 0 {
+		return nil, ErrNotFound
+	}
+
+	now := s.clock.Now()
+	roomID := s.uuidGen.New()
+	leftKey, rightKey := orderedPublicKeyPair(user, target)
+	room := ChatRoomRecord{
+		RoomID:         roomID,
+		OwnerPublicKey: append([]byte(nil), user...),
+		Title:          "Direct",
+		Visibility:     VisibilityPrivate,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	leftMember := ChatMemberRecord{
+		RoomID:            roomID,
+		UserPublicKey:     append([]byte(nil), user...),
+		Role:              RoleOwner,
+		NotificationLevel: NotificationAll,
+		JoinedAt:          now,
+	}
+	rightMember := ChatMemberRecord{
+		RoomID:            roomID,
+		UserPublicKey:     append([]byte(nil), target...),
+		Role:              RoleMember,
+		NotificationLevel: NotificationAll,
+		JoinedAt:          now,
+	}
+	direct := DirectRoomRecord{
+		RoomID:             roomID,
+		LeftUserPublicKey:  leftKey,
+		RightUserPublicKey: rightKey,
+		CreatedAt:          now,
+	}
+
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if roomID, found, err := s.store.FindDirectRoomIDByUsers(txCtx, user, target); err != nil {
+			return err
+		} else if found {
+			room.RoomID = roomID
+			return ErrConflict
+		}
+		return s.store.CreateDirectRoom(txCtx, room, leftMember, rightMember, direct)
+	}); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return map[string]any{"roomId": room.RoomID, "alreadyExisted": true, "createdAt": nil}, nil
+		}
+		return nil, err
+	}
+
+	return map[string]any{"roomId": roomID, "alreadyExisted": false, "createdAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
 func (s *Service) ListChatRooms(ctx context.Context, user []byte, limit int, cursor string) (map[string]any, error) {
@@ -824,6 +916,34 @@ func (s *Service) DeclineChatInvitation(ctx context.Context, user []byte, invita
 
 func (s *Service) SendMessage(ctx context.Context, user []byte, roomID uuid.UUID, clientMsgID uuid.UUID, body [][]byte) (map[string]any, error) {
 	now := s.clock.Now()
+	if direct, err := s.store.IsDirectRoom(ctx, roomID); err != nil {
+		return nil, err
+	} else if direct {
+		members, err := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		if len(members) != 2 {
+			return nil, ErrForbidden
+		}
+		var peer []byte
+		for _, member := range members {
+			if !bytes.Equal(member, user) {
+				peer = member
+				break
+			}
+		}
+		if len(peer) == 0 {
+			return nil, ErrForbidden
+		}
+		friends, err := s.store.AreFriends(ctx, user, peer)
+		if err != nil {
+			return nil, err
+		}
+		if !friends {
+			return nil, ErrForbidden
+		}
+	}
 	message := MessageRecord{MessageID: s.uuidGen.New(), RoomID: roomID, SenderPublicKey: user, ClientMsgID: clientMsgID, Body: body, CreatedAt: now}
 	if err := s.store.CreateMessage(ctx, message); err != nil {
 		return nil, err
@@ -897,3 +1017,10 @@ var (
 	ErrConflict        = errors.New("conflict")
 	ErrProfileRequired = errors.New("profile must be completed before using this RPC")
 )
+
+func orderedPublicKeyPair(left []byte, right []byte) ([]byte, []byte) {
+	if bytes.Compare(left, right) <= 0 {
+		return append([]byte(nil), left...), append([]byte(nil), right...)
+	}
+	return append([]byte(nil), right...), append([]byte(nil), left...)
+}

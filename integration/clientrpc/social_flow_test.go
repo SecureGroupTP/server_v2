@@ -82,6 +82,12 @@ func TestTCPAndWebSocketSocialFlow(t *testing.T) {
 	assertFriendRequestState(t, tcpUser, secondRequestID, friendRequestAccepted)
 	assertFriendRequestEvent(t, drainEvents(t, wsUser), "friend.requestAccepted", secondRequestID)
 
+	uploadKeyPackage(t, wsUser)
+	directRoom := callOK(t, tcpUser, "createDirectRoom", map[string]any{"targetUserPublicKey": wsUser.PublicKey()})
+	if directRoom[0].Parameters["roomId"] == nil || directRoom[0].Parameters["alreadyExisted"] != false {
+		t.Fatalf("unexpected createDirectRoom response: %#v", directRoom[0].Parameters)
+	}
+
 	callOK(t, tcpUser, "updateProfile", map[string]any{"displayName": "Alice Cooper", "bio": "new bio"})
 	profileEvents := drainEvents(t, wsUser)
 	event := assertEvent(t, profileEvents, "profile.updated")
@@ -500,6 +506,22 @@ func acceptFriendRequest(t *testing.T, client rpcClient, requestID uuid.UUID) {
 	response := callOK(t, client, "acceptFriendRequest", map[string]any{"requestId": requestID})
 	if response[0].Parameters["friendId"] == nil {
 		t.Fatalf("missing friendId: %#v", response[0].Parameters)
+	}
+}
+
+func uploadKeyPackage(t *testing.T, client rpcClient) {
+	t.Helper()
+	response := callOK(t, client, "uploadKeyPackages", map[string]any{
+		"packages": []any{
+			map[string]any{
+				"keyPackageBytes": []byte("key-package"),
+				"isLastResort":    false,
+				"expiresAt":       time.Now().Add(time.Hour).UTC().UnixMicro(),
+			},
+		},
+	})
+	if recorded := intParam(response[0].Parameters, "recordedCount"); recorded != 1 {
+		t.Fatalf("expected one recorded key package, got %d: %#v", recorded, response[0].Parameters)
 	}
 }
 

@@ -73,6 +73,8 @@ func (h *Handler) handleRoomMethods(ctx context.Context, rpcCall string, params 
 	switch rpcCall {
 	case "createChatRoom":
 		return h.clientService.CreateChatRoom(ctx, state.UserPublicKey, optionalString(params, "title"), optionalString(params, "description"), int16(optionalInt(params, "visibility")))
+	case "createDirectRoom":
+		return h.clientService.CreateDirectRoom(ctx, state.UserPublicKey, mustBytes(params, "targetUserPublicKey"))
 	case "listChatRooms":
 		return h.clientService.ListChatRooms(ctx, state.UserPublicKey, optionalInt(params, "limit"), optionalString(params, "cursor"))
 	case "getChatRoom":

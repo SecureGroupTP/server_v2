@@ -2,6 +2,7 @@ package clientapi
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,11 +34,14 @@ type storeMock struct {
 	messageCreated MessageRecord
 	groupInfo      ChatRoomGroupInfoRecord
 	welcome        ChatRoomWelcomeRecord
+	directRoom     DirectRoomRecord
 	banStatus      BanStatusRecord
 	hasBanStatus   bool
 	profiles       []ProfileRecord
 	friends        []FriendRecord
 	friendCount    int64
+	areFriends     bool
+	keyPackages    []KeyPackageRecord
 	roomMembers    [][]byte
 }
 
@@ -71,7 +75,7 @@ func (s *storeMock) InsertKeyPackages(context.Context, []KeyPackageRecord) (int,
 }
 
 func (s *storeMock) FetchKeyPackages(context.Context, [][]byte, time.Time) ([]KeyPackageRecord, error) {
-	return nil, nil
+	return s.keyPackages, nil
 }
 func (s *storeMock) DeleteKeyPackagesByUserDevice(context.Context, []byte, string) error { return nil }
 func (s *storeMock) UpsertRoomGroupInfo(_ context.Context, _ []byte, groupInfo ChatRoomGroupInfoRecord) error {
@@ -82,10 +86,20 @@ func (s *storeMock) GetRoomGroupInfo(context.Context, uuid.UUID) (ChatRoomGroupI
 	return s.groupInfo, nil
 }
 func (s *storeMock) FindDirectRoomIDByUsers(context.Context, []byte, []byte) (uuid.UUID, bool, error) {
-	if s.roomCreated.RoomID == uuid.Nil {
+	if s.directRoom.RoomID == uuid.Nil {
 		return uuid.Nil, false, nil
 	}
-	return s.roomCreated.RoomID, true, nil
+	return s.directRoom.RoomID, true, nil
+}
+func (s *storeMock) CreateDirectRoom(_ context.Context, room ChatRoomRecord, left ChatMemberRecord, right ChatMemberRecord, direct DirectRoomRecord) error {
+	s.roomCreated = room
+	s.memberCreated = left
+	s.roomMembers = [][]byte{left.UserPublicKey, right.UserPublicKey}
+	s.directRoom = direct
+	return nil
+}
+func (s *storeMock) IsDirectRoom(context.Context, uuid.UUID) (bool, error) {
+	return s.directRoom.RoomID != uuid.Nil, nil
 }
 func (s *storeMock) UpsertRoomWelcome(_ context.Context, welcome ChatRoomWelcomeRecord) error {
 	s.welcome = welcome
@@ -93,6 +107,9 @@ func (s *storeMock) UpsertRoomWelcome(_ context.Context, welcome ChatRoomWelcome
 }
 func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
 	return s.welcome, nil
+}
+func (s *storeMock) AreFriends(context.Context, []byte, []byte) (bool, error) {
+	return s.areFriends, nil
 }
 func (s *storeMock) ListFriends(context.Context, []byte, int, int) ([]FriendRecord, error) {
 	return s.friends, nil
@@ -305,6 +322,85 @@ func TestServiceCreateChatRoomCreatesOwnerMembership(t *testing.T) {
 	}
 	if store.memberCreated.Role != RoleOwner {
 		t.Fatalf("expected owner role, got %d", store.memberCreated.Role)
+	}
+}
+
+func TestServiceCreateDirectRoomCreatesTwoMemberRoom(t *testing.T) {
+	now := time.Date(2026, 4, 11, 16, 15, 0, 0, time.UTC)
+	roomID := uuid.MustParse("abababab-abab-abab-abab-abababababab")
+	alice := bytes32(1)
+	bob := bytes32(2)
+	store := &storeMock{
+		areFriends:  true,
+		keyPackages: []KeyPackageRecord{{UserPublicKey: bob, DeviceID: "device-1", KeyPackageBytes: []byte("kp"), ExpiresAt: now.Add(time.Hour)}},
+	}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{roomID}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.CreateDirectRoom(context.Background(), alice, bob)
+	if err != nil {
+		t.Fatalf("create direct room: %v", err)
+	}
+	if response["roomId"] != roomID || response["alreadyExisted"] != false {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if store.roomCreated.Visibility != VisibilityPrivate {
+		t.Fatalf("unexpected visibility: %d", store.roomCreated.Visibility)
+	}
+	if store.directRoom.RoomID != roomID {
+		t.Fatalf("expected direct room record, got %#v", store.directRoom)
+	}
+	if len(store.roomMembers) != 2 {
+		t.Fatalf("expected two direct members, got %d", len(store.roomMembers))
+	}
+}
+
+func TestServiceCreateDirectRoomReturnsExistingRoom(t *testing.T) {
+	now := time.Date(2026, 4, 11, 16, 20, 0, 0, time.UTC)
+	roomID := uuid.MustParse("bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc")
+	store := &storeMock{
+		areFriends: true,
+		directRoom: DirectRoomRecord{
+			RoomID:             roomID,
+			LeftUserPublicKey:  bytes32(1),
+			RightUserPublicKey: bytes32(2),
+			CreatedAt:          now,
+		},
+	}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.CreateDirectRoom(context.Background(), bytes32(1), bytes32(2))
+	if err != nil {
+		t.Fatalf("create direct room: %v", err)
+	}
+	if response["roomId"] != roomID || response["alreadyExisted"] != true {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestServiceCreateDirectRoomRequiresFriendshipAndKeyPackages(t *testing.T) {
+	now := time.Date(2026, 4, 11, 16, 25, 0, 0, time.UTC)
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{}, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	if _, err := service.CreateDirectRoom(context.Background(), bytes32(1), bytes32(2)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden without friendship, got %v", err)
+	}
+
+	store := &storeMock{areFriends: true}
+	service, err = NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	if _, err := service.CreateDirectRoom(context.Background(), bytes32(1), bytes32(2)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found without key packages, got %v", err)
 	}
 }
 

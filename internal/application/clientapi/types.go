@@ -67,9 +67,12 @@ type Store interface {
 	UpsertRoomGroupInfo(ctx context.Context, userPublicKey []byte, groupInfo ChatRoomGroupInfoRecord) error
 	GetRoomGroupInfo(ctx context.Context, roomID uuid.UUID) (ChatRoomGroupInfoRecord, error)
 	FindDirectRoomIDByUsers(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (uuid.UUID, bool, error)
+	CreateDirectRoom(ctx context.Context, room ChatRoomRecord, left ChatMemberRecord, right ChatMemberRecord, direct DirectRoomRecord) error
+	IsDirectRoom(ctx context.Context, roomID uuid.UUID) (bool, error)
 	UpsertRoomWelcome(ctx context.Context, welcome ChatRoomWelcomeRecord) error
 	GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (ChatRoomWelcomeRecord, error)
 
+	AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error)
 	ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]FriendRecord, error)
 	CountFriends(ctx context.Context, userPublicKey []byte) (int64, error)
 	RemoveFriend(ctx context.Context, userPublicKey []byte, friendPublicKey []byte, removedAt time.Time) error
@@ -174,6 +177,13 @@ type ChatRoomWelcomeRecord struct {
 	WelcomeBytes        []byte
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type DirectRoomRecord struct {
+	RoomID             uuid.UUID
+	LeftUserPublicKey  []byte
+	RightUserPublicKey []byte
+	CreatedAt          time.Time
 }
 
 type FriendRecord struct {

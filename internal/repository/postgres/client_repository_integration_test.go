@@ -127,11 +127,15 @@ func TestClientRepositoryMlsArtifactsAndInvitationContract(t *testing.T) {
 	if err := repo.UpdateProfile(context.Background(), user2, "@eric", "Eric", "", "bio", now); err != nil {
 		t.Fatalf("update profile 2: %v", err)
 	}
-	if err := repo.CreateRoom(context.Background(), clientapi.ChatRoomRecord{RoomID: roomID, OwnerPublicKey: user1, Title: "direct", Visibility: clientapi.VisibilityPrivate, CreatedAt: now, UpdatedAt: now}, clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user1, Role: clientapi.RoleOwner, NotificationLevel: clientapi.NotificationAll, JoinedAt: now}); err != nil {
-		t.Fatalf("create room: %v", err)
-	}
-	if err := repo.UpsertRoomMembership(context.Background(), clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user2, Role: clientapi.RoleMember, NotificationLevel: clientapi.NotificationAll, JoinedAt: now}); err != nil {
-		t.Fatalf("upsert membership: %v", err)
+	leftKey, rightKey := orderedPublicKeyPair(user1, user2)
+	if err := repo.CreateDirectRoom(
+		context.Background(),
+		clientapi.ChatRoomRecord{RoomID: roomID, OwnerPublicKey: user1, Title: "direct", Visibility: clientapi.VisibilityPrivate, CreatedAt: now, UpdatedAt: now},
+		clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user1, Role: clientapi.RoleOwner, NotificationLevel: clientapi.NotificationAll, JoinedAt: now},
+		clientapi.ChatMemberRecord{RoomID: roomID, UserPublicKey: user2, Role: clientapi.RoleMember, NotificationLevel: clientapi.NotificationAll, JoinedAt: now},
+		clientapi.DirectRoomRecord{RoomID: roomID, LeftUserPublicKey: leftKey, RightUserPublicKey: rightKey, CreatedAt: now},
+	); err != nil {
+		t.Fatalf("create direct room: %v", err)
 	}
 	if err := repo.UpsertRoomGroupInfo(context.Background(), user1, clientapi.ChatRoomGroupInfoRecord{
 		RoomID:            roomID,
@@ -156,6 +160,9 @@ func TestClientRepositoryMlsArtifactsAndInvitationContract(t *testing.T) {
 	}
 	if !found || foundRoomID != roomID {
 		t.Fatalf("unexpected direct room lookup: found=%v room=%s", found, foundRoomID)
+	}
+	if direct, err := repo.IsDirectRoom(context.Background(), roomID); err != nil || !direct {
+		t.Fatalf("expected direct room, direct=%v err=%v", direct, err)
 	}
 
 	if err := repo.UpsertRoomWelcome(context.Background(), clientapi.ChatRoomWelcomeRecord{

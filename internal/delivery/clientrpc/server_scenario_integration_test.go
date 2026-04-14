@@ -90,6 +90,29 @@ func TestServerScenarioProfileFriendRoomMessage(t *testing.T) {
 		t.Fatalf("expected friendId: %#v", acceptResp[0].Parameters)
 	}
 
+	uploadKeyPackagesResp := callRPC(t, user2Client, server.URL, user2Priv, "uploadKeyPackages", map[string]any{
+		"packages": []any{
+			map[string]any{
+				"keyPackageBytes": []byte("key-package"),
+				"isLastResort":    false,
+				"expiresAt":       time.Now().Add(time.Hour).UTC().UnixMicro(),
+			},
+		},
+	})
+	if uploadKeyPackagesResp[0].Parameters["recordedCount"] == nil {
+		t.Fatalf("expected recordedCount: %#v", uploadKeyPackagesResp[0].Parameters)
+	}
+
+	directRoomResp := callRPC(t, user1Client, server.URL, user1Priv, "createDirectRoom", map[string]any{"targetUserPublicKey": user2Pub})
+	directRoomID := mustExtractUUIDParam(t, directRoomResp[0].Parameters, "roomId")
+	if directRoomResp[0].Parameters["alreadyExisted"] != false {
+		t.Fatalf("expected new direct room: %#v", directRoomResp[0].Parameters)
+	}
+	directRoomAgainResp := callRPC(t, user2Client, server.URL, user2Priv, "createDirectRoom", map[string]any{"targetUserPublicKey": user1Pub})
+	if mustExtractUUIDParam(t, directRoomAgainResp[0].Parameters, "roomId") != directRoomID || directRoomAgainResp[0].Parameters["alreadyExisted"] != true {
+		t.Fatalf("expected existing direct room: %#v", directRoomAgainResp[0].Parameters)
+	}
+
 	roomResp := callRPC(t, user1Client, server.URL, user1Priv, "createChatRoom", map[string]any{"title": "Room 1", "description": "desc", "visibility": uint64(1)})
 	roomID := mustExtractUUIDParam(t, roomResp[0].Parameters, "roomId")
 
