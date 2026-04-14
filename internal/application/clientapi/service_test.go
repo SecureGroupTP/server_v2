@@ -435,7 +435,7 @@ func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
 	}
 
 	welcome := []byte("welcome-1")
-	response, err := service.SendWelcome(context.Background(), bytes32(1), target, welcome)
+	response, err := service.SendWelcome(context.Background(), bytes32(1), nil, target, welcome)
 	if err != nil {
 		t.Fatalf("send welcome: %v", err)
 	}

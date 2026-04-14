@@ -256,11 +256,20 @@ func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID,
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) SendWelcome(ctx context.Context, user []byte, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
+func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
 	now := s.clock.Now()
-	if roomID, found, err := s.store.FindDirectRoomIDByUsers(ctx, user, targetUserPublicKey); err != nil {
+	var roomID uuid.UUID
+	var found bool
+	if requestedRoomID != nil && *requestedRoomID != uuid.Nil {
+		roomID = *requestedRoomID
+		found = true
+	} else if directRoomID, directFound, err := s.store.FindDirectRoomIDByUsers(ctx, user, targetUserPublicKey); err != nil {
 		return nil, err
-	} else if found {
+	} else {
+		roomID = directRoomID
+		found = directFound
+	}
+	if found {
 		if err := s.store.UpsertRoomWelcome(ctx, ChatRoomWelcomeRecord{
 			RoomID:              roomID,
 			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
