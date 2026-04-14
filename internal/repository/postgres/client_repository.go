@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -631,7 +630,7 @@ func (r *ClientRepository) UpdateMemberRole(ctx context.Context, actorPublicKey 
 	if err := r.ensureRoomAdmin(ctx, roomID, actorPublicKey); err != nil {
 		return err
 	}
-	_, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET role = $4 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, targetPublicKey, updatedAt, role)
+	_, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_members SET role = $3 WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, targetPublicKey, role)
 	return err
 }
 
@@ -789,34 +788,6 @@ LIMIT 1
 	return out, true, nil
 }
 
-func (r *ClientRepository) CreateMessage(ctx context.Context, message clientapi.MessageRecord) error {
-	if _, err := r.ensureMember(ctx, message.RoomID, message.SenderPublicKey); err != nil {
-		return err
-	}
-	body, err := json.Marshal(message.Body)
-	if err != nil {
-		return err
-	}
-	_, err = r.dbtx(ctx).ExecContext(ctx, `INSERT INTO chat_messages (message_id, room_id, sender_public_key, client_msg_id, body, created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6)`, message.MessageID, message.RoomID, message.SenderPublicKey, message.ClientMsgID, string(body), message.CreatedAt)
-	return err
-}
-
-func (r *ClientRepository) DeleteMessage(ctx context.Context, actorPublicKey []byte, roomID uuid.UUID, messageID uuid.UUID, deletedAt time.Time) error {
-	member, err := r.ensureMember(ctx, roomID, actorPublicKey)
-	if err != nil {
-		return err
-	}
-	res, err := r.dbtx(ctx).ExecContext(ctx, `UPDATE chat_messages SET deleted_at = $3 WHERE room_id = $1 AND message_id = $2 AND (sender_public_key = $4 OR $5 >= $6)`, roomID, messageID, deletedAt, actorPublicKey, member.Role, clientapi.RoleAdmin)
-	if err != nil {
-		return err
-	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		return clientapi.ErrNotFound
-	}
-	return nil
-}
-
 func (r *ClientRepository) ListActiveRoomMemberPublicKeys(ctx context.Context, roomID uuid.UUID) ([][]byte, error) {
 	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT user_public_key FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, roomID)
 	if err != nil {
@@ -844,7 +815,6 @@ func (r *ClientRepository) CountServerStats(ctx context.Context) (clientapi.Serv
 		{`SELECT COUNT(*) FROM device_push_tokens`, &stats.Devices},
 		{`SELECT COUNT(*) FROM friends`, &stats.Friends},
 		{`SELECT COUNT(*) FROM chat_rooms WHERE deleted_at IS NULL`, &stats.Rooms},
-		{`SELECT COUNT(*) FROM chat_messages WHERE deleted_at IS NULL`, &stats.Messages},
 	}
 	for _, item := range queries {
 		if err := r.dbtx(ctx).QueryRowContext(ctx, item.query).Scan(item.dst); err != nil {
@@ -881,7 +851,6 @@ func (r *ClientRepository) CountGroupStats(ctx context.Context, roomID uuid.UUID
 		dst   *int64
 	}{
 		{`SELECT COUNT(*) FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, &stats.Members},
-		{`SELECT COUNT(*) FROM chat_messages WHERE room_id = $1 AND deleted_at IS NULL`, &stats.Messages},
 		{`SELECT COUNT(*) FROM chat_invitations WHERE room_id = $1`, &stats.Invites},
 	}
 	for _, item := range queries {

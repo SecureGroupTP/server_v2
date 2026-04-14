@@ -31,9 +31,11 @@ type storeMock struct {
 	invitation     ChatInvitationRecord
 	roomCreated    ChatRoomRecord
 	memberCreated  ChatMemberRecord
-	messageCreated MessageRecord
 	groupInfo      ChatRoomGroupInfoRecord
 	welcome        ChatRoomWelcomeRecord
+	avatar         AvatarRecord
+	devices        []DeviceRecord
+	device         DeviceRecord
 	directRoom     DirectRoomRecord
 	banStatus      BanStatusRecord
 	hasBanStatus   bool
@@ -42,7 +44,14 @@ type storeMock struct {
 	friendCount    int64
 	areFriends     bool
 	keyPackages    []KeyPackageRecord
+	rooms          []ChatRoomRecord
+	roomState      ChatRoomStateRecord
 	roomMembers    [][]byte
+	members        []ChatMemberRecord
+	permissions    []ChatMemberPermissionRecord
+	serverStats    ServerStats
+	userStats      UserStats
+	groupStats     GroupStats
 }
 
 func (s *storeMock) GetProfile(context.Context, []byte) (ProfileRecord, error) {
@@ -63,15 +72,19 @@ func (s *storeMock) SearchProfiles(context.Context, string, int, int) ([]Profile
 }
 func (s *storeMock) DeleteAccount(context.Context, []byte, time.Time) error { return nil }
 func (s *storeMock) GetProfileAvatar(context.Context, []byte) (AvatarRecord, error) {
-	return AvatarRecord{}, nil
+	return s.avatar, nil
 }
-func (s *storeMock) ListDevices(context.Context, []byte) ([]DeviceRecord, error) { return nil, nil }
-func (s *storeMock) UpsertDevice(context.Context, DeviceRecord) (DeviceRecord, error) {
-	return DeviceRecord{}, nil
+func (s *storeMock) ListDevices(context.Context, []byte) ([]DeviceRecord, error) {
+	return s.devices, nil
+}
+func (s *storeMock) UpsertDevice(_ context.Context, device DeviceRecord) (DeviceRecord, error) {
+	s.device = device
+	return device, nil
 }
 func (s *storeMock) RemoveDevice(context.Context, []byte, uuid.UUID, time.Time) error { return nil }
-func (s *storeMock) InsertKeyPackages(context.Context, []KeyPackageRecord) (int, error) {
-	return 0, nil
+func (s *storeMock) InsertKeyPackages(_ context.Context, keyPackages []KeyPackageRecord) (int, error) {
+	s.keyPackages = append([]KeyPackageRecord(nil), keyPackages...)
+	return len(keyPackages), nil
 }
 
 func (s *storeMock) FetchKeyPackages(context.Context, [][]byte, time.Time) ([]KeyPackageRecord, error) {
@@ -140,7 +153,7 @@ func (s *storeMock) CreateRoom(_ context.Context, room ChatRoomRecord, owner Cha
 }
 
 func (s *storeMock) ListRooms(context.Context, []byte, int, int) ([]ChatRoomRecord, error) {
-	return nil, nil
+	return s.rooms, nil
 }
 
 func (s *storeMock) GetRoom(context.Context, uuid.UUID) (ChatRoomRecord, error) {
@@ -148,7 +161,7 @@ func (s *storeMock) GetRoom(context.Context, uuid.UUID) (ChatRoomRecord, error) 
 }
 
 func (s *storeMock) SearchRooms(context.Context, string, int, int) ([]ChatRoomRecord, error) {
-	return nil, nil
+	return s.rooms, nil
 }
 
 func (s *storeMock) UpdateRoom(context.Context, []byte, uuid.UUID, string, string, string, time.Time) error {
@@ -156,13 +169,19 @@ func (s *storeMock) UpdateRoom(context.Context, []byte, uuid.UUID, string, strin
 }
 func (s *storeMock) DeleteRoom(context.Context, []byte, uuid.UUID, time.Time) error { return nil }
 func (s *storeMock) GetRoomAvatar(context.Context, uuid.UUID) (AvatarRecord, error) {
-	return AvatarRecord{}, nil
+	return s.avatar, nil
 }
-func (s *storeMock) AddRoomState(context.Context, []byte, ChatRoomStateRecord) error { return nil }
+func (s *storeMock) AddRoomState(_ context.Context, _ []byte, state ChatRoomStateRecord) error {
+	s.roomState = state
+	return nil
+}
 func (s *storeMock) FetchRoomState(context.Context, []byte, uuid.UUID, int64) (ChatRoomStateRecord, error) {
-	return ChatRoomStateRecord{}, nil
+	return s.roomState, nil
 }
-func (s *storeMock) JoinRoom(context.Context, ChatMemberRecord) error { return nil }
+func (s *storeMock) JoinRoom(_ context.Context, member ChatMemberRecord) error {
+	s.memberCreated = member
+	return nil
+}
 func (s *storeMock) UpsertRoomMembership(_ context.Context, member ChatMemberRecord) error {
 	s.memberCreated = member
 	return nil
@@ -173,26 +192,30 @@ func (s *storeMock) KickMember(context.Context, []byte, uuid.UUID, []byte, time.
 }
 
 func (s *storeMock) ListMembers(context.Context, uuid.UUID, int, int) ([]ChatMemberRecord, error) {
-	return nil, nil
+	return s.members, nil
 }
 
-func (s *storeMock) UpdateMemberRole(context.Context, []byte, uuid.UUID, []byte, int16, time.Time) error {
+func (s *storeMock) UpdateMemberRole(_ context.Context, _ []byte, roomID uuid.UUID, target []byte, role int16, updatedAt time.Time) error {
+	s.memberCreated = ChatMemberRecord{RoomID: roomID, UserPublicKey: target, Role: role, JoinedAt: updatedAt}
 	return nil
 }
 
-func (s *storeMock) CreateMemberPermission(context.Context, []byte, ChatMemberPermissionRecord) error {
+func (s *storeMock) CreateMemberPermission(_ context.Context, _ []byte, permission ChatMemberPermissionRecord) error {
+	s.permissions = append(s.permissions, permission)
 	return nil
 }
 
 func (s *storeMock) ListMemberPermissions(context.Context, uuid.UUID, []byte, int, int) ([]ChatMemberPermissionRecord, error) {
-	return nil, nil
+	return s.permissions, nil
 }
 
-func (s *storeMock) UpdateMemberPermission(context.Context, []byte, uuid.UUID, bool, time.Time) error {
+func (s *storeMock) UpdateMemberPermission(_ context.Context, _ []byte, permissionID uuid.UUID, isAllowed bool, updatedAt time.Time) error {
+	s.permissions = []ChatMemberPermissionRecord{{PermissionID: permissionID, IsAllowed: isAllowed, UpdatedAt: updatedAt}}
 	return nil
 }
 
-func (s *storeMock) DeleteMemberPermission(context.Context, []byte, uuid.UUID, time.Time) error {
+func (s *storeMock) DeleteMemberPermission(_ context.Context, _ []byte, permissionID uuid.UUID, deletedAt time.Time) error {
+	s.permissions = []ChatMemberPermissionRecord{{PermissionID: permissionID, UpdatedAt: deletedAt}}
 	return nil
 }
 func (s *storeMock) CreateInvitation(_ context.Context, invitation ChatInvitationRecord) error {
@@ -203,11 +226,17 @@ func (s *storeMock) GetInvitation(context.Context, uuid.UUID) (ChatInvitationRec
 	return s.invitation, nil
 }
 func (s *storeMock) ListSentInvitations(context.Context, []byte, *uuid.UUID, int, int) ([]ChatInvitationRecord, error) {
-	return nil, nil
+	if s.invitation.InvitationID == uuid.Nil {
+		return nil, nil
+	}
+	return []ChatInvitationRecord{s.invitation}, nil
 }
 
 func (s *storeMock) ListIncomingInvitations(context.Context, []byte, int, int) ([]ChatInvitationRecord, error) {
-	return nil, nil
+	if s.invitation.InvitationID == uuid.Nil {
+		return nil, nil
+	}
+	return []ChatInvitationRecord{s.invitation}, nil
 }
 
 func (s *storeMock) UpdateInvitationState(context.Context, uuid.UUID, []byte, int16, time.Time, []int16) (ChatInvitationRecord, error) {
@@ -219,24 +248,16 @@ func (s *storeMock) FindPendingInvitation(context.Context, uuid.UUID, []byte) (C
 	}
 	return s.invitation, true, nil
 }
-func (s *storeMock) CreateMessage(_ context.Context, message MessageRecord) error {
-	s.messageCreated = message
-	return nil
-}
-func (s *storeMock) DeleteMessage(context.Context, []byte, uuid.UUID, uuid.UUID, time.Time) error {
-	return nil
-}
-
 func (s *storeMock) ListActiveRoomMemberPublicKeys(context.Context, uuid.UUID) ([][]byte, error) {
 	return s.roomMembers, nil
 }
-func (s *storeMock) CountServerStats(context.Context) (ServerStats, error) { return ServerStats{}, nil }
+func (s *storeMock) CountServerStats(context.Context) (ServerStats, error) { return s.serverStats, nil }
 func (s *storeMock) CountUserStats(context.Context, []byte) (UserStats, error) {
-	return UserStats{}, nil
+	return s.userStats, nil
 }
 
 func (s *storeMock) CountGroupStats(context.Context, uuid.UUID) (GroupStats, error) {
-	return GroupStats{}, nil
+	return s.groupStats, nil
 }
 
 type eventAppenderMock struct{ events []domainauth.Event }
@@ -331,8 +352,7 @@ func TestServiceCreateDirectRoomCreatesTwoMemberRoom(t *testing.T) {
 	alice := bytes32(1)
 	bob := bytes32(2)
 	store := &storeMock{
-		areFriends:  true,
-		keyPackages: []KeyPackageRecord{{UserPublicKey: bob, DeviceID: "device-1", KeyPackageBytes: []byte("kp"), ExpiresAt: now.Add(time.Hour)}},
+		areFriends: true,
 	}
 	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{roomID}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
 	if err != nil {
@@ -383,7 +403,7 @@ func TestServiceCreateDirectRoomReturnsExistingRoom(t *testing.T) {
 	}
 }
 
-func TestServiceCreateDirectRoomRequiresFriendshipAndKeyPackages(t *testing.T) {
+func TestServiceCreateDirectRoomRequiresFriendship(t *testing.T) {
 	now := time.Date(2026, 4, 11, 16, 25, 0, 0, time.UTC)
 	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{}, &eventAppenderMock{}, sessionLookupMock{})
 	if err != nil {
@@ -392,15 +412,6 @@ func TestServiceCreateDirectRoomRequiresFriendshipAndKeyPackages(t *testing.T) {
 
 	if _, err := service.CreateDirectRoom(context.Background(), bytes32(1), bytes32(2)); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected forbidden without friendship, got %v", err)
-	}
-
-	store := &storeMock{areFriends: true}
-	service, err = NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
-	if err != nil {
-		t.Fatalf("new service: %v", err)
-	}
-	if _, err := service.CreateDirectRoom(context.Background(), bytes32(1), bytes32(2)); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected not found without key packages, got %v", err)
 	}
 }
 
@@ -553,6 +564,93 @@ func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
 	}
 }
 
+func TestServiceSendWelcomeStoresDirectWelcomeWhenRoomIDProvided(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 35, 0, 0, time.UTC)
+	roomID := uuid.MustParse("9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a")
+	sender := bytes32(1)
+	target := bytes32(2)
+	store := &storeMock{
+		directRoom: DirectRoomRecord{
+			RoomID:             roomID,
+			LeftUserPublicKey:  sender,
+			RightUserPublicKey: target,
+			CreatedAt:          now,
+		},
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	welcome := []byte("direct-welcome")
+	response, err := service.SendWelcome(context.Background(), sender, &roomID, target, welcome)
+	if err != nil {
+		t.Fatalf("send welcome: %v", err)
+	}
+	if response["acceptedAt"] == nil {
+		t.Fatalf("expected acceptedAt: %#v", response)
+	}
+	if store.welcome.RoomID != roomID {
+		t.Fatalf("unexpected stored welcome room: %#v", store.welcome)
+	}
+	if string(store.welcome.TargetUserPublicKey) != string(target) {
+		t.Fatalf("unexpected stored welcome target: %#v", store.welcome.TargetUserPublicKey)
+	}
+	if string(store.welcome.SenderPublicKey) != string(sender) {
+		t.Fatalf("unexpected stored welcome sender: %#v", store.welcome.SenderPublicKey)
+	}
+	if string(store.welcome.WelcomeBytes) != string(welcome) {
+		t.Fatalf("unexpected stored welcome bytes: %#v", store.welcome.WelcomeBytes)
+	}
+	if len(events.events) != 1 || events.events[0].EventType != "mlsWelcomeReceived" {
+		t.Fatalf("unexpected welcome events: %#v", events.events)
+	}
+}
+
+func TestServiceFetchWelcomeReturnsStoredDirectWelcome(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 40, 0, 0, time.UTC)
+	roomID := uuid.MustParse("9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b")
+	target := bytes32(2)
+	store := &storeMock{
+		directRoom: DirectRoomRecord{RoomID: roomID, LeftUserPublicKey: bytes32(1), RightUserPublicKey: target, CreatedAt: now},
+		welcome: ChatRoomWelcomeRecord{
+			RoomID:              roomID,
+			TargetUserPublicKey: target,
+			SenderPublicKey:     bytes32(1),
+			WelcomeBytes:        []byte("stored-welcome"),
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		},
+	}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.FetchWelcome(context.Background(), target, roomID)
+	if err != nil {
+		t.Fatalf("fetch welcome: %v", err)
+	}
+	welcomeBytes, ok := response["welcomeBytes"].([]byte)
+	if !ok || string(welcomeBytes) != "stored-welcome" {
+		t.Fatalf("unexpected welcome response: %#v", response)
+	}
+}
+
+func TestServiceFetchWelcomeRejectsNonDirectRoom(t *testing.T) {
+	now := time.Date(2026, 4, 11, 21, 42, 0, 0, time.UTC)
+	roomID := uuid.MustParse("9c9c9c9c-9c9c-9c9c-9c9c-9c9c9c9c9c9c")
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, &storeMock{}, &eventAppenderMock{}, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	if _, err := service.FetchWelcome(context.Background(), bytes32(2), roomID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden for non-direct welcome fetch, got %v", err)
+	}
+}
+
 func TestServiceUploadGroupInfoStoresLatestBytes(t *testing.T) {
 	now := time.Date(2026, 4, 11, 21, 45, 0, 0, time.UTC)
 	roomID := uuid.MustParse("12121212-1212-1212-1212-121212121212")
@@ -668,7 +766,7 @@ func TestServiceSendMessageAppendsMlsBodyEvent(t *testing.T) {
 	member := bytes32(2)
 	store := &storeMock{roomMembers: [][]byte{actor, member}}
 	events := &eventAppenderMock{}
-	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{messageID, uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{messageID, uuid.New(), uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -681,15 +779,316 @@ func TestServiceSendMessageAppendsMlsBodyEvent(t *testing.T) {
 	if response["messageId"] != messageID {
 		t.Fatalf("unexpected message id: %#v", response["messageId"])
 	}
-	if len(events.events) != 1 {
-		t.Fatalf("expected one message event, got %d", len(events.events))
+	if len(events.events) != 2 {
+		t.Fatalf("expected two message events, got %d", len(events.events))
 	}
-	if events.events[0].EventType != "mlsMessageReceived" {
-		t.Fatalf("unexpected event type: %s", events.events[0].EventType)
+	for _, event := range events.events {
+		if event.EventType != "mlsMessageReceived" {
+			t.Fatalf("unexpected event type: %s", event.EventType)
+		}
+		rawBody, ok := event.Payload["body"].([][]byte)
+		if !ok || len(rawBody) != 2 || string(rawBody[0]) != "cipher-1" || string(rawBody[1]) != "cipher-2" {
+			t.Fatalf("unexpected body payload: %#v", event.Payload["body"])
+		}
 	}
-	rawBody, ok := events.events[0].Payload["body"].([][]byte)
-	if !ok || len(rawBody) != 2 || string(rawBody[0]) != "cipher-1" || string(rawBody[1]) != "cipher-2" {
-		t.Fatalf("unexpected body payload: %#v", events.events[0].Payload["body"])
+}
+
+func TestServiceSendDirectMessageRequiresActiveFriendship(t *testing.T) {
+	now := time.Date(2026, 4, 11, 22, 20, 0, 0, time.UTC)
+	roomID := uuid.MustParse("97979797-9797-9797-9797-979797979797")
+	actor := bytes32(1)
+	peer := bytes32(2)
+	store := &storeMock{
+		directRoom:  DirectRoomRecord{RoomID: roomID, LeftUserPublicKey: actor, RightUserPublicKey: peer, CreatedAt: now},
+		roomMembers: [][]byte{actor, peer},
+		areFriends:  false,
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = service.SendMessage(context.Background(), actor, roomID, uuid.New(), [][]byte{[]byte("cipher")})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden without active friendship, got %v", err)
+	}
+	if len(events.events) != 0 {
+		t.Fatalf("expected no message events after forbidden direct send, got %#v", events.events)
+	}
+}
+
+func TestServiceSendDirectMessageRequiresExactlyTwoActiveMembers(t *testing.T) {
+	now := time.Date(2026, 4, 11, 22, 25, 0, 0, time.UTC)
+	roomID := uuid.MustParse("98989898-9898-9898-9898-989898989898")
+	actor := bytes32(1)
+	peer := bytes32(2)
+	extra := bytes32(3)
+	store := &storeMock{
+		directRoom:  DirectRoomRecord{RoomID: roomID, LeftUserPublicKey: actor, RightUserPublicKey: peer, CreatedAt: now},
+		roomMembers: [][]byte{actor, peer, extra},
+		areFriends:  true,
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = service.SendMessage(context.Background(), actor, roomID, uuid.New(), [][]byte{[]byte("cipher")})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden for malformed direct room membership, got %v", err)
+	}
+	if len(events.events) != 0 {
+		t.Fatalf("expected no message events after malformed direct send, got %#v", events.events)
+	}
+}
+
+func TestServiceSendDirectMessageAppendsPeerEventWhenFriendshipActive(t *testing.T) {
+	now := time.Date(2026, 4, 11, 22, 30, 0, 0, time.UTC)
+	roomID := uuid.MustParse("99989898-9898-9898-9898-989898989899")
+	messageID := uuid.MustParse("91919191-9191-9191-9191-919191919191")
+	actor := bytes32(1)
+	peer := bytes32(2)
+	store := &storeMock{
+		directRoom:  DirectRoomRecord{RoomID: roomID, LeftUserPublicKey: actor, RightUserPublicKey: peer, CreatedAt: now},
+		roomMembers: [][]byte{actor, peer},
+		areFriends:  true,
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour}, fixedClock{now: now}, &sequenceUUID{ids: []uuid.UUID{messageID, uuid.New(), uuid.New()}}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	response, err := service.SendMessage(context.Background(), actor, roomID, uuid.New(), [][]byte{[]byte("direct-cipher")})
+	if err != nil {
+		t.Fatalf("send direct message: %v", err)
+	}
+	if response["messageId"] != messageID {
+		t.Fatalf("unexpected message id: %#v", response["messageId"])
+	}
+	if len(events.events) != 2 {
+		t.Fatalf("expected two direct message events, got %d", len(events.events))
+	}
+	receivers := map[string]bool{}
+	for _, event := range events.events {
+		receivers[string(event.UserPublicKey)] = true
+		if event.EventType != "mlsMessageReceived" {
+			t.Fatalf("unexpected direct event type: %s", event.EventType)
+		}
+	}
+	if !receivers[string(actor)] || !receivers[string(peer)] {
+		t.Fatalf("unexpected direct message receivers: %#v", events.events)
+	}
+}
+
+func TestServiceCoversRemainingRPCSuccessPaths(t *testing.T) {
+	now := time.Date(2026, 4, 12, 10, 0, 0, 0, time.UTC)
+	user := bytes32(1)
+	peer := bytes32(2)
+	roomID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	groupID := uuid.MustParse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+	invitationID := uuid.MustParse("dddddddd-eeee-ffff-1111-222222222222")
+	permissionID := uuid.MustParse("eeeeeeee-ffff-1111-2222-333333333333")
+	deviceID := uuid.MustParse("ffffffff-1111-2222-3333-444444444444")
+	stateID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	expiresAt := now.Add(time.Hour)
+	store := &storeMock{
+		avatar: AvatarRecord{Bytes: []byte("avatar")},
+		devices: []DeviceRecord{{
+			ID:        deviceID,
+			Platform:  2,
+			PushToken: "push-1",
+			IsEnabled: true,
+			UpdatedAt: now,
+		}},
+		keyPackages: []KeyPackageRecord{{
+			UserPublicKey:   peer,
+			DeviceID:        "device-2",
+			KeyPackageBytes: []byte("kp"),
+			ExpiresAt:       expiresAt,
+		}},
+		roomCreated: ChatRoomRecord{
+			RoomID:      roomID,
+			Title:       "Room",
+			Description: "Desc",
+			Visibility:  VisibilityPublic,
+			StateID:     &stateID,
+			UpdatedAt:   now,
+		},
+		rooms: []ChatRoomRecord{{
+			RoomID:    roomID,
+			Title:     "Room",
+			UpdatedAt: now,
+		}},
+		roomState: ChatRoomStateRecord{
+			RoomID:    roomID,
+			GroupID:   groupID,
+			Epoch:     7,
+			TreeBytes: []byte("tree"),
+			TreeHash:  []byte("hash"),
+		},
+		groupInfo:   ChatRoomGroupInfoRecord{RoomID: roomID, GroupInfoBytes: []byte("group-info")},
+		roomMembers: [][]byte{user, peer},
+		members: []ChatMemberRecord{{
+			RoomID:        roomID,
+			UserPublicKey: peer,
+			Role:          RoleAdmin,
+			JoinedAt:      now,
+		}},
+		permissions: []ChatMemberPermissionRecord{{
+			PermissionID:  permissionID,
+			RoomID:        roomID,
+			UserPublicKey: peer,
+			PermissionKey: "send",
+			IsAllowed:     true,
+			CreatedAt:     now,
+		}},
+		invitation: ChatInvitationRecord{
+			InvitationID:     invitationID,
+			RoomID:           roomID,
+			InviterPublicKey: user,
+			InviteePublicKey: peer,
+			ExpiresAt:        &expiresAt,
+			State:            InvitationPending,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		},
+		serverStats: ServerStats{Profiles: 1, Devices: 2, Friends: 3, Rooms: 4},
+		userStats:   UserStats{Devices: 1, KeyPackages: 2, Friends: 3, OutgoingFriendRequests: 4, Rooms: 5},
+		groupStats:  GroupStats{Members: 2, Invites: 1},
+	}
+	ids := make([]uuid.UUID, 0, 40)
+	for i := 0; i < 40; i++ {
+		ids = append(ids, uuid.New())
+	}
+	events := &eventAppenderMock{}
+	service, err := NewService(Config{Version: "2", EventRetention: time.Hour, EventBatchSize: 2, SessionChallengeTTL: 5 * time.Minute}, fixedClock{now: now}, &sequenceUUID{ids: ids}, noopTxManager{}, store, events, sessionLookupMock{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	if response, err := service.DeleteAccount(context.Background(), user); err != nil || response["deletedAt"] == nil {
+		t.Fatalf("delete account response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetProfileAvatar(context.Background(), user); err != nil || string(response["avatarBytes"].([]byte)) != "avatar" || response["contentType"] != "application/octet-stream" {
+		t.Fatalf("get profile avatar response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListDevices(context.Background(), user); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("list devices response=%#v err=%v", response, err)
+	}
+	if response, err := service.RegisterDevicePushToken(context.Background(), uuid.New(), user, 1, "token", true); err != nil || response["id"] == nil || store.device.PushToken != "token" {
+		t.Fatalf("register device response=%#v device=%#v err=%v", response, store.device, err)
+	}
+	if response, err := service.RemoveDevice(context.Background(), user, deviceID); err != nil || response["removedAt"] == nil {
+		t.Fatalf("remove device response=%#v err=%v", response, err)
+	}
+	if response, err := service.UploadKeyPackages(context.Background(), uuid.New(), user, []map[string]any{{
+		"keyPackageBytes": []byte("kp-new"),
+		"isLastResort":    true,
+		"expiresAt":       expiresAt,
+	}}); err != nil || response["recordedCount"] != 1 || len(store.keyPackages) != 1 || !store.keyPackages[0].IsLastResort {
+		t.Fatalf("upload key packages response=%#v records=%#v err=%v", response, store.keyPackages, err)
+	}
+	if response, err := service.FetchKeyPackages(context.Background(), [][]byte{peer}); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("fetch key packages response=%#v err=%v", response, err)
+	}
+	if response, err := service.FetchGroupInfo(context.Background(), roomID); err != nil || string(response["groupInfoBytes"].([]byte)) != "group-info" {
+		t.Fatalf("fetch group info response=%#v err=%v", response, err)
+	}
+	if response, err := service.RemoveFriend(context.Background(), user, peer); err != nil || response["removedAt"] == nil {
+		t.Fatalf("remove friend response=%#v err=%v", response, err)
+	}
+	if response, err := service.AcceptFriendRequest(context.Background(), peer, uuid.New()); err != nil || response["friendId"] == nil {
+		t.Fatalf("accept friend request response=%#v err=%v", response, err)
+	}
+	if response, err := service.DeclineFriendRequest(context.Background(), peer, uuid.New()); err != nil || response["declinedAt"] == nil {
+		t.Fatalf("decline friend request response=%#v err=%v", response, err)
+	}
+	if response, err := service.CancelFriendRequest(context.Background(), user, uuid.New()); err != nil || response["canceledAt"] == nil {
+		t.Fatalf("cancel friend request response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListFriendRequests(context.Background(), user, "incoming", 10, ""); err != nil || len(response["items"].([]map[string]any)) != 0 {
+		t.Fatalf("list friend requests response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListChatRooms(context.Background(), user, 10, ""); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("list chat rooms response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetChatRoom(context.Background(), roomID); err != nil || response["room"].(map[string]any)["stateId"].(*uuid.UUID) == nil || *response["room"].(map[string]any)["stateId"].(*uuid.UUID) != stateID {
+		t.Fatalf("get chat room response=%#v err=%v", response, err)
+	}
+	if response, err := service.SearchChatRooms(context.Background(), "room", 10, ""); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("search chat rooms response=%#v err=%v", response, err)
+	}
+	if response, err := service.SyncChatRoom(context.Background(), roomID); err != nil || response["syncedAt"] == nil {
+		t.Fatalf("sync chat room response=%#v err=%v", response, err)
+	}
+	if response, err := service.UpdateChatRoom(context.Background(), user, roomID, "New", "Desc", "hash"); err != nil || response["updatedAt"] == nil {
+		t.Fatalf("update chat room response=%#v err=%v", response, err)
+	}
+	if response, err := service.UpdateChatRoomState(context.Background(), user, roomID, groupID, 9, []byte("tree-2"), []byte("hash-2")); err != nil || response["acceptedAt"] == nil || store.roomState.Epoch != 9 {
+		t.Fatalf("update room state response=%#v state=%#v err=%v", response, store.roomState, err)
+	}
+	if response, err := service.FetchChatRoomState(context.Background(), user, roomID, 9); err != nil || response["epoch"] != int64(9) {
+		t.Fatalf("fetch room state response=%#v err=%v", response, err)
+	}
+	if response, err := service.DeleteChatRoom(context.Background(), user, roomID); err != nil || response["deletedAt"] == nil {
+		t.Fatalf("delete chat room response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetChatRoomAvatar(context.Background(), roomID); err != nil || string(response["avatarBytes"].([]byte)) != "avatar" {
+		t.Fatalf("get chat room avatar response=%#v err=%v", response, err)
+	}
+	if response, err := service.JoinChatRoom(context.Background(), user, roomID); err != nil || response["joinedAt"] == nil || store.memberCreated.Role != RoleMember {
+		t.Fatalf("join chat room response=%#v member=%#v err=%v", response, store.memberCreated, err)
+	}
+	if response, err := service.LeaveChatRoom(context.Background(), user, roomID); err != nil || response["leftAt"] == nil {
+		t.Fatalf("leave chat room response=%#v err=%v", response, err)
+	}
+	if response, err := service.KickChatMember(context.Background(), user, roomID, peer); err != nil || response["kickedAt"] == nil {
+		t.Fatalf("kick chat member response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListChatMembers(context.Background(), roomID, 10, ""); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("list chat members response=%#v err=%v", response, err)
+	}
+	if response, err := service.UpdateChatMemberRole(context.Background(), user, roomID, peer, RoleAdmin); err != nil || response["updatedAt"] == nil || store.memberCreated.Role != RoleAdmin {
+		t.Fatalf("update member role response=%#v member=%#v err=%v", response, store.memberCreated, err)
+	}
+	if response, err := service.CreateChatMemberPermission(context.Background(), user, roomID, peer, "send", true); err != nil || response["id"] == nil {
+		t.Fatalf("create permission response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListChatMemberPermissions(context.Background(), roomID, peer, 10, ""); err != nil || len(response["items"].([]map[string]any)) == 0 {
+		t.Fatalf("list permissions response=%#v err=%v", response, err)
+	}
+	if response, err := service.UpdateChatMemberPermission(context.Background(), user, permissionID, false); err != nil || response["updatedAt"] == nil || store.permissions[0].IsAllowed {
+		t.Fatalf("update permission response=%#v permissions=%#v err=%v", response, store.permissions, err)
+	}
+	if response, err := service.DeleteChatMemberPermission(context.Background(), user, permissionID); err != nil || response["deletedAt"] == nil {
+		t.Fatalf("delete permission response=%#v err=%v", response, err)
+	}
+	if response, err := service.RevokeChatInvitation(context.Background(), user, invitationID); err != nil || response["revokedAt"] == nil {
+		t.Fatalf("revoke invitation response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListSentChatInvitations(context.Background(), user, &roomID, 10, ""); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("list sent invitations response=%#v err=%v", response, err)
+	}
+	if response, err := service.ListIncomingChatInvitations(context.Background(), peer, 10, ""); err != nil || len(response["items"].([]map[string]any)) != 1 {
+		t.Fatalf("list incoming invitations response=%#v err=%v", response, err)
+	}
+	if response, err := service.DeclineChatInvitation(context.Background(), peer, invitationID); err != nil || response["declinedAt"] == nil {
+		t.Fatalf("decline invitation response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetServerLimits(context.Background()); err != nil || response["spent"].(map[string]any)["profiles"] != int64(1) {
+		t.Fatalf("server limits response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetUserLimits(context.Background(), user); err != nil || response["spent"].(map[string]any)["keyPackages"] != int64(2) {
+		t.Fatalf("user limits response=%#v err=%v", response, err)
+	}
+	if response, err := service.GetGroupLimits(context.Background(), roomID); err != nil || response["spent"].(map[string]any)["invites"] != int64(1) {
+		t.Fatalf("group limits response=%#v err=%v", response, err)
+	}
+	if config := service.GetServerConfig(); config["config"].(map[string]any)["version"] != "2" {
+		t.Fatalf("unexpected server config: %#v", config)
 	}
 }
 

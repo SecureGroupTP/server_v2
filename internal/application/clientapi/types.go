@@ -107,8 +107,6 @@ type Store interface {
 	ListIncomingInvitations(ctx context.Context, inviteePublicKey []byte, limit int, offset int) ([]ChatInvitationRecord, error)
 	UpdateInvitationState(ctx context.Context, invitationID uuid.UUID, actorPublicKey []byte, targetState int16, updatedAt time.Time, allowedCurrentStates []int16) (ChatInvitationRecord, error)
 	FindPendingInvitation(ctx context.Context, roomID uuid.UUID, inviteePublicKey []byte) (ChatInvitationRecord, bool, error)
-	CreateMessage(ctx context.Context, message MessageRecord) error
-	DeleteMessage(ctx context.Context, actorPublicKey []byte, roomID uuid.UUID, messageID uuid.UUID, deletedAt time.Time) error
 	ListActiveRoomMemberPublicKeys(ctx context.Context, roomID uuid.UUID) ([][]byte, error)
 
 	CountServerStats(ctx context.Context) (ServerStats, error)
@@ -259,22 +257,11 @@ type ChatInvitationRecord struct {
 	UpdatedAt            time.Time
 }
 
-type MessageRecord struct {
-	MessageID       uuid.UUID
-	RoomID          uuid.UUID
-	SenderPublicKey []byte
-	ClientMsgID     uuid.UUID
-	Body            [][]byte
-	CreatedAt       time.Time
-	DeletedAt       *time.Time
-}
-
 type ServerStats struct {
 	Profiles int64
 	Devices  int64
 	Friends  int64
 	Rooms    int64
-	Messages int64
 }
 
 type UserStats struct {
@@ -286,7 +273,6 @@ type UserStats struct {
 }
 
 type GroupStats struct {
-	Members  int64
-	Messages int64
-	Invites  int64
+	Members int64
+	Invites int64
 }

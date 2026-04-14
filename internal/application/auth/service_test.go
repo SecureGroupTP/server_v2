@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
@@ -230,5 +231,74 @@ func TestServicePullEventsMarksDelivered(t *testing.T) {
 	}
 	if len(events.marked) != 1 || events.marked[0] != eventID {
 		t.Fatalf("expected event %s marked delivered, got %#v", eventID, events.marked)
+	}
+}
+
+func TestServiceSubscriptionsLookupAndValidation(t *testing.T) {
+	publicKey := make([]byte, ed25519.PublicKeySize)
+	now := time.Date(2026, 4, 12, 12, 0, 0, 0, time.UTC)
+	sessionID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	subscriptionID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	eventID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	sessions := &sessionRepoMock{session: domainauth.Session{
+		SessionID:        sessionID,
+		UserPublicKey:    publicKey,
+		IsAuthenticated:  true,
+		ChallengePayload: []byte("challenge"),
+		ExpiresAt:        now.Add(time.Hour),
+	}}
+	subscriptions := &subscriptionRepoMock{}
+	events := &eventRepoMock{}
+	service, err := NewService(
+		Config{ChallengeTTL: time.Minute, EventRetention: time.Hour, EventBatchSize: 2},
+		fixedClock{now: now},
+		&sequenceUUIDGenerator{ids: []uuid.UUID{subscriptionID, eventID}},
+		fixedRandomReader{data: make([]byte, challengeSize)},
+		noopTxManager{},
+		sessions,
+		subscriptions,
+		events,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	loaded, err := service.LookupSession(context.Background(), sessionID)
+	if err != nil || loaded.SessionID != sessionID {
+		t.Fatalf("lookup session: loaded=%#v err=%v", loaded, err)
+	}
+	subscription, err := service.SubscribeToEvents(context.Background(), SubscribeToEventsInput{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if subscription.SubscriptionID != subscriptionID || len(subscriptions.created) != 1 || len(events.appended) != 1 {
+		t.Fatalf("unexpected subscription state: out=%#v subs=%#v events=%#v", subscription, subscriptions.created, events.appended)
+	}
+	unsubscribed, err := service.UnsubscribeFromEvents(context.Background(), UnsubscribeFromEventsInput{SubscriptionID: subscriptionID})
+	if err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	if !unsubscribed.UnsubscribedAt.Equal(now) {
+		t.Fatalf("unexpected unsubscribe time: %#v", unsubscribed)
+	}
+
+	invalidKey := []byte("short")
+	if _, err := service.RequestAuthChallenge(context.Background(), RequestAuthChallengeInput{UserPublicKey: invalidKey, DeviceID: "device", ClientNonce: []byte("nonce")}); !errors.Is(err, domainauth.ErrInvalidPublicKey) {
+		t.Fatalf("expected invalid public key, got %v", err)
+	}
+	if _, err := service.RequestAuthChallenge(context.Background(), RequestAuthChallengeInput{UserPublicKey: publicKey, ClientNonce: []byte("nonce")}); !errors.Is(err, domainauth.ErrInvalidDeviceID) {
+		t.Fatalf("expected invalid device, got %v", err)
+	}
+	if _, err := service.RequestAuthChallenge(context.Background(), RequestAuthChallengeInput{UserPublicKey: publicKey, DeviceID: "device"}); !errors.Is(err, domainauth.ErrInvalidClientNonce) {
+		t.Fatalf("expected invalid nonce, got %v", err)
+	}
+	if _, err := service.RequestAuthChallenge(context.Background(), RequestAuthChallengeInput{UserPublicKey: publicKey, DeviceID: "device", ClientNonce: []byte("nonce"), PublicIP: "not-ip"}); err == nil {
+		t.Fatal("expected invalid public ip")
+	}
+	if _, err := service.SolveAuthChallenge(context.Background(), SolveAuthChallengeInput{}); !errors.Is(err, domainauth.ErrInvalidSessionID) {
+		t.Fatalf("expected invalid session id, got %v", err)
+	}
+	if _, err := service.PullEvents(context.Background(), PullEventsInput{UserPublicKey: invalidKey}); !errors.Is(err, domainauth.ErrInvalidPublicKey) {
+		t.Fatalf("expected invalid pull public key, got %v", err)
 	}
 }

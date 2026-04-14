@@ -148,19 +148,3 @@ CREATE INDEX IF NOT EXISTS chat_invitations_inviter_idx
 
 CREATE INDEX IF NOT EXISTS chat_invitations_invitee_idx
   ON chat_invitations (invitee_public_key, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-  message_id UUID PRIMARY KEY,
-  room_id UUID NOT NULL REFERENCES chat_rooms(room_id) ON DELETE CASCADE,
-  sender_public_key BYTEA NOT NULL,
-  client_msg_id UUID NOT NULL,
-  body JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  deleted_at TIMESTAMPTZ,
-  CONSTRAINT chat_messages_sender_public_key_length CHECK (octet_length(sender_public_key) = 32),
-  UNIQUE (room_id, sender_public_key, client_msg_id)
-);
-
-CREATE INDEX IF NOT EXISTS chat_messages_room_id_idx
-  ON chat_messages (room_id, created_at DESC)
-  WHERE deleted_at IS NULL;

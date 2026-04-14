@@ -544,14 +544,6 @@ func (s *Service) CreateDirectRoom(ctx context.Context, user []byte, target []by
 		return map[string]any{"roomId": roomID, "alreadyExisted": true, "createdAt": nil}, nil
 	}
 
-	keyPackages, err := s.store.FetchKeyPackages(ctx, [][]byte{target}, s.clock.Now())
-	if err != nil {
-		return nil, err
-	}
-	if len(keyPackages) == 0 {
-		return nil, ErrNotFound
-	}
-
 	now := s.clock.Now()
 	roomID := s.uuidGen.New()
 	leftKey, rightKey := orderedPublicKeyPair(user, target)
@@ -916,13 +908,23 @@ func (s *Service) DeclineChatInvitation(ctx context.Context, user []byte, invita
 
 func (s *Service) SendMessage(ctx context.Context, user []byte, roomID uuid.UUID, clientMsgID uuid.UUID, body [][]byte) (map[string]any, error) {
 	now := s.clock.Now()
+	members, err := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	senderIsMember := false
+	for _, member := range members {
+		if bytes.Equal(member, user) {
+			senderIsMember = true
+			break
+		}
+	}
+	if !senderIsMember {
+		return nil, ErrForbidden
+	}
 	if direct, err := s.store.IsDirectRoom(ctx, roomID); err != nil {
 		return nil, err
 	} else if direct {
-		members, err := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
-		if err != nil {
-			return nil, err
-		}
 		if len(members) != 2 {
 			return nil, ErrForbidden
 		}
@@ -944,35 +946,19 @@ func (s *Service) SendMessage(ctx context.Context, user []byte, roomID uuid.UUID
 			return nil, ErrForbidden
 		}
 	}
-	message := MessageRecord{MessageID: s.uuidGen.New(), RoomID: roomID, SenderPublicKey: user, ClientMsgID: clientMsgID, Body: body, CreatedAt: now}
-	if err := s.store.CreateMessage(ctx, message); err != nil {
-		return nil, err
-	}
-	members, _ := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
+	messageID := s.uuidGen.New()
 	for _, member := range members {
-		if string(member) == string(user) {
-			continue
-		}
-		_ = s.appendEvent(ctx, member, "mlsMessageReceived", map[string]any{
+		if err := s.appendEvent(ctx, member, "mlsMessageReceived", map[string]any{
 			"roomId":          roomID.String(),
-			"messageId":       message.MessageID.String(),
+			"messageId":       messageID.String(),
+			"clientMsgId":     clientMsgID.String(),
 			"senderPublicKey": user,
 			"body":            body,
-		})
+		}); err != nil {
+			return nil, err
+		}
 	}
-	return map[string]any{"messageId": message.MessageID, "createdAt": now.UTC().Format(time.RFC3339Nano)}, nil
-}
-
-func (s *Service) DeleteMessage(ctx context.Context, user []byte, roomID uuid.UUID, messageID uuid.UUID) (map[string]any, error) {
-	now := s.clock.Now()
-	if err := s.store.DeleteMessage(ctx, user, roomID, messageID, now); err != nil {
-		return nil, err
-	}
-	members, _ := s.store.ListActiveRoomMemberPublicKeys(ctx, roomID)
-	for _, member := range members {
-		_ = s.appendEvent(ctx, member, "message.deleted", map[string]any{"roomId": roomID.String(), "messageId": messageID.String()})
-	}
-	return map[string]any{"deletedAt": now.UTC().Format(time.RFC3339Nano)}, nil
+	return map[string]any{"messageId": messageID, "createdAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
 func (s *Service) GetServerLimits(ctx context.Context) (map[string]any, error) {
@@ -980,7 +966,7 @@ func (s *Service) GetServerLimits(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"limits": map[string]any{"eventBatchSize": s.cfg.EventBatchSize, "challengeTTLSeconds": int64(s.cfg.SessionChallengeTTL.Seconds())}, "spent": map[string]any{"profiles": stats.Profiles, "devices": stats.Devices, "friends": stats.Friends, "rooms": stats.Rooms, "messages": stats.Messages}}, nil
+	return map[string]any{"limits": map[string]any{"eventBatchSize": s.cfg.EventBatchSize, "challengeTTLSeconds": int64(s.cfg.SessionChallengeTTL.Seconds())}, "spent": map[string]any{"profiles": stats.Profiles, "devices": stats.Devices, "friends": stats.Friends, "rooms": stats.Rooms}}, nil
 }
 
 func (s *Service) GetUserLimits(ctx context.Context, user []byte) (map[string]any, error) {
@@ -996,7 +982,7 @@ func (s *Service) GetGroupLimits(ctx context.Context, roomID uuid.UUID) (map[str
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"limits": map[string]any{"members": 1000, "messages": 1000000, "invites": 10000}, "spent": map[string]any{"members": stats.Members, "messages": stats.Messages, "invites": stats.Invites}}, nil
+	return map[string]any{"limits": map[string]any{"members": 1000, "invites": 10000}, "spent": map[string]any{"members": stats.Members, "invites": stats.Invites}}, nil
 }
 
 func (s *Service) GetServerConfig() map[string]any {

@@ -146,8 +146,6 @@ func (h *Handler) handleMessageMethods(ctx context.Context, rpcCall string, para
 	switch rpcCall {
 	case "sendMessage":
 		return h.clientService.SendMessage(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustUUID(params, "clientMsgId"), mustBytesList(params, "body"))
-	case "deleteMessage":
-		return h.clientService.DeleteMessage(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustUUID(params, "messageId"))
 	default:
 		return nil, nil
 	}

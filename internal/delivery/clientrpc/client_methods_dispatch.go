@@ -19,7 +19,7 @@ func (h *Handler) dispatchClientMethod(ctx context.Context, rpcCall string, para
 		return h.handleMemberMethods(ctx, rpcCall, params, state)
 	case "sendChatInvitation", "revokeChatInvitation", "listSentChatInvitations", "listIncomingChatInvitations", "acceptChatInvitation", "declineChatInvitation":
 		return h.handleInvitationMethods(ctx, rpcCall, params, state)
-	case "sendMessage", "deleteMessage":
+	case "sendMessage":
 		return h.handleMessageMethods(ctx, rpcCall, params, state)
 	case "getServerLimits", "getUserLimits", "getGroupLimits", "getServerConfig":
 		return h.handleOverviewMethods(ctx, rpcCall, params, state)
