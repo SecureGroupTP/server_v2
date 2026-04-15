@@ -869,6 +869,99 @@ func (r *ClientRepository) CountGroupStats(ctx context.Context, roomID uuid.UUID
 	return stats, nil
 }
 
+func (r *ClientRepository) RecordUserUsage(ctx context.Context, userPublicKey []byte, now time.Time, requests int64, bytesIn int64, bytesOut int64) error {
+	if requests == 0 && bytesIn == 0 && bytesOut == 0 {
+		return nil
+	}
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+WITH kinds(kind) AS (
+  SELECT unnest(ARRAY['minute','hour','day','week','month','allTime']::text[])
+)
+INSERT INTO user_usage_stats (user_public_key, kind, bucket_start, requests, bytes_in, bytes_out, updated_at)
+SELECT
+  $1,
+  k.kind,
+  CASE k.kind
+    WHEN 'minute' THEN (date_trunc('minute', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+    WHEN 'hour' THEN (date_trunc('hour', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+    WHEN 'day' THEN (date_trunc('day', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+    WHEN 'week' THEN (date_trunc('week', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+    WHEN 'month' THEN (date_trunc('month', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+    WHEN 'allTime' THEN TIMESTAMPTZ '1970-01-01 00:00:00+00'
+  END,
+  $3,
+  $4,
+  $5,
+  $2
+FROM kinds k
+ON CONFLICT (user_public_key, kind, bucket_start)
+DO UPDATE SET
+  requests = user_usage_stats.requests + EXCLUDED.requests,
+  bytes_in = user_usage_stats.bytes_in + EXCLUDED.bytes_in,
+  bytes_out = user_usage_stats.bytes_out + EXCLUDED.bytes_out,
+  updated_at = EXCLUDED.updated_at
+`, userPublicKey, now, requests, bytesIn, bytesOut)
+	if err != nil {
+		return fmt.Errorf("record user usage: %w", err)
+	}
+	return nil
+}
+
+func (r *ClientRepository) GetUserUsageStats(ctx context.Context, userPublicKey []byte, now time.Time) (clientapi.UsageStats, error) {
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `
+WITH targets(kind, bucket_start) AS (
+  VALUES
+    ('minute', (date_trunc('minute', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')),
+    ('hour', (date_trunc('hour', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')),
+    ('day', (date_trunc('day', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')),
+    ('week', (date_trunc('week', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')),
+    ('month', (date_trunc('month', $2 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')),
+    ('allTime', TIMESTAMPTZ '1970-01-01 00:00:00+00')
+)
+SELECT
+  t.kind,
+  COALESCE(s.requests, 0) AS requests,
+  COALESCE(s.bytes_in, 0) AS bytes_in,
+  COALESCE(s.bytes_out, 0) AS bytes_out
+FROM targets t
+LEFT JOIN user_usage_stats s
+  ON s.user_public_key = $1
+ AND s.kind = t.kind
+ AND s.bucket_start = t.bucket_start
+`, userPublicKey, now)
+	if err != nil {
+		return clientapi.UsageStats{}, fmt.Errorf("get user usage stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := clientapi.UsageStats{}
+	for rows.Next() {
+		var kind string
+		var stat clientapi.UsageStat
+		if err := rows.Scan(&kind, &stat.Requests, &stat.BytesIn, &stat.BytesOut); err != nil {
+			return clientapi.UsageStats{}, fmt.Errorf("scan user usage stats: %w", err)
+		}
+		switch kind {
+		case "minute":
+			out.Minute = stat
+		case "hour":
+			out.Hour = stat
+		case "day":
+			out.Day = stat
+		case "week":
+			out.Week = stat
+		case "month":
+			out.Month = stat
+		case "allTime":
+			out.AllTime = stat
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return clientapi.UsageStats{}, fmt.Errorf("iterate user usage stats: %w", err)
+	}
+	return out, nil
+}
+
 func (r *ClientRepository) ensureMember(ctx context.Context, roomID uuid.UUID, userPublicKey []byte) (clientapi.ChatMemberRecord, error) {
 	row := r.dbtx(ctx).QueryRowContext(ctx, `SELECT room_id, user_public_key, role, notification_level, joined_at, left_at FROM chat_members WHERE room_id = $1 AND user_public_key = $2 AND left_at IS NULL`, roomID, userPublicKey)
 	var member clientapi.ChatMemberRecord

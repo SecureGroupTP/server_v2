@@ -159,6 +159,8 @@ func (h *Handler) handleOverviewMethods(ctx context.Context, rpcCall string, par
 		return h.clientService.GetUserLimits(ctx, state.UserPublicKey)
 	case "getGroupLimits":
 		return h.clientService.GetGroupLimits(ctx, mustUUID(params, "roomId"))
+	case "getMyUsageStats":
+		return h.clientService.GetMyUsageStats(ctx, state.UserPublicKey)
 	case "getServerConfig":
 		return h.clientService.GetServerConfig(), nil
 	default:

@@ -996,6 +996,40 @@ func (s *Service) GetServerConfig() map[string]any {
 	return map[string]any{"config": map[string]any{"updatedAt": s.clock.Now().UTC().Format(time.RFC3339Nano), "version": s.cfg.Version}}
 }
 
+func (s *Service) RecordUserUsage(ctx context.Context, user []byte, requests int, bytesIn int, bytesOut int) error {
+	if len(user) != ed25519.PublicKeySize {
+		return nil
+	}
+	now := s.clock.Now()
+	return s.store.RecordUserUsage(ctx, user, now, int64(requests), int64(bytesIn), int64(bytesOut))
+}
+
+func usageStatToMap(stat UsageStat) map[string]any {
+	return map[string]any{
+		"requests": stat.Requests,
+		"bytesIn":  stat.BytesIn,
+		"bytesOut": stat.BytesOut,
+	}
+}
+
+func (s *Service) GetMyUsageStats(ctx context.Context, user []byte) (map[string]any, error) {
+	if len(user) != ed25519.PublicKeySize {
+		return nil, domainauth.ErrInvalidPublicKey
+	}
+	stats, err := s.store.GetUserUsageStats(ctx, user, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"minute":  usageStatToMap(stats.Minute),
+		"hour":    usageStatToMap(stats.Hour),
+		"day":     usageStatToMap(stats.Day),
+		"week":    usageStatToMap(stats.Week),
+		"month":   usageStatToMap(stats.Month),
+		"allTime": usageStatToMap(stats.AllTime),
+	}, nil
+}
+
 func (s *Service) appendEvent(ctx context.Context, user []byte, eventType string, payload map[string]any) error {
 	if len(user) != ed25519.PublicKeySize {
 		return nil

@@ -53,6 +53,7 @@ type storeMock struct {
 	serverStats    ServerStats
 	userStats      UserStats
 	groupStats     GroupStats
+	usageStats     UsageStats
 }
 
 func (s *storeMock) GetProfile(context.Context, []byte) (ProfileRecord, error) {
@@ -263,6 +264,14 @@ func (s *storeMock) CountUserStats(context.Context, []byte) (UserStats, error) {
 
 func (s *storeMock) CountGroupStats(context.Context, uuid.UUID) (GroupStats, error) {
 	return s.groupStats, nil
+}
+
+func (s *storeMock) RecordUserUsage(context.Context, []byte, time.Time, int64, int64, int64) error {
+	return nil
+}
+
+func (s *storeMock) GetUserUsageStats(context.Context, []byte, time.Time) (UsageStats, error) {
+	return s.usageStats, nil
 }
 
 type eventAppenderMock struct{ events []domainauth.Event }

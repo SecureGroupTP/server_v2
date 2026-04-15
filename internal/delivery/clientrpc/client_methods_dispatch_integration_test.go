@@ -209,6 +209,14 @@ func (s *dispatchStore) CountGroupStats(context.Context, uuid.UUID) (clientapi.G
 	return clientapi.GroupStats{Members: 2}, nil
 }
 
+func (s *dispatchStore) RecordUserUsage(context.Context, []byte, time.Time, int64, int64, int64) error {
+	return nil
+}
+
+func (s *dispatchStore) GetUserUsageStats(context.Context, []byte, time.Time) (clientapi.UsageStats, error) {
+	return clientapi.UsageStats{}, nil
+}
+
 func TestDispatchClientMethodRoutesAllGroups(t *testing.T) {
 	now := time.Date(2026, 4, 12, 16, 0, 0, 0, time.UTC)
 	roomID := uuid.MustParse("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")

@@ -113,6 +113,24 @@ type Store interface {
 	CountServerStats(ctx context.Context) (ServerStats, error)
 	CountUserStats(ctx context.Context, userPublicKey []byte) (UserStats, error)
 	CountGroupStats(ctx context.Context, roomID uuid.UUID) (GroupStats, error)
+
+	RecordUserUsage(ctx context.Context, userPublicKey []byte, now time.Time, requests int64, bytesIn int64, bytesOut int64) error
+	GetUserUsageStats(ctx context.Context, userPublicKey []byte, now time.Time) (UsageStats, error)
+}
+
+type UsageStat struct {
+	Requests int64
+	BytesIn  int64
+	BytesOut int64
+}
+
+type UsageStats struct {
+	Minute  UsageStat
+	Hour    UsageStat
+	Day     UsageStat
+	Week    UsageStat
+	Month   UsageStat
+	AllTime UsageStat
 }
 
 type ProfileRecord struct {

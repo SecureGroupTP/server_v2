@@ -165,7 +165,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	scope := h.httpConnSessions.get(connectionID)
 	scope.mu.Lock()
-	responses, nextState, statusCode := h.handleBatch(r.Context(), body, scope.state)
+	responses, nextState, statusCode, requestCount := h.handleBatch(r.Context(), body, scope.state)
 	scope.state = nextState
 	scope.mu.Unlock()
 	payload, err := cbor.Marshal(responses)
@@ -178,6 +178,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/cbor")
 	w.WriteHeader(statusCode)
 	_, _ = w.Write(payload)
+	h.recordUsage(r.Context(), nextState, requestCount, len(body), len(payload))
 	h.logger.Info(
 		"rpc http request completed",
 		"connection_id", connectionID,
@@ -202,15 +203,18 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var writeMu sync.Mutex
-	writePackets := func(packets []rpc.ResponsePacket) error {
+	writePackets := func(packets []rpc.ResponsePacket) (int, error) {
 		encoded, err := cbor.Marshal(packets)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		return conn.WriteMessage(websocket.BinaryMessage, encoded)
+		if err := conn.WriteMessage(websocket.BinaryMessage, encoded); err != nil {
+			return 0, err
+		}
+		return len(encoded), nil
 	}
 
 	defer func() {
@@ -258,11 +262,13 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if len(packets) > 0 {
-					if err := writePackets(packets); err != nil {
+					bytesOut, err := writePackets(packets)
+					if err != nil {
 						h.logger.Debug("websocket event push write failed", "remote_addr", r.RemoteAddr, "error", err)
 						cancel()
 						return
 					}
+					h.recordUserUsage(pushCtx, userPublicKey, 0, 0, bytesOut)
 					// More events may already be queued; keep draining.
 					continue
 				}
@@ -291,7 +297,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		responses, nextState, _ := h.handleBatch(ctx, payload, state)
+		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state)
 		state = nextState
 
 		// Start async event push after the connection becomes authenticated.
@@ -299,7 +305,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			startPush(state.UserPublicKey)
 		}
 
-		if err := writePackets(responses); err != nil {
+		bytesOut, err := writePackets(responses)
+		if err != nil {
 			h.logger.Warn("failed to write websocket rpc response", "remote_addr", r.RemoteAddr, "response_count", len(responses), "error", err)
 			if stopPush != nil {
 				stopPush()
@@ -307,6 +314,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		h.recordUsage(ctx, state, requestCount, len(payload), bytesOut)
 		h.logger.Info(
 			"websocket rpc batch completed",
 			"remote_addr", r.RemoteAddr,
@@ -324,12 +332,19 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	defer cancel()
 
 	decoder := cbor.NewDecoder(rw)
-	encoder := cbor.NewEncoder(rw)
 	var writeMu sync.Mutex
-	writePackets := func(packets []rpc.ResponsePacket) error {
+	writePackets := func(packets []rpc.ResponsePacket) (int, error) {
+		encoded, err := cbor.Marshal(packets)
+		if err != nil {
+			return 0, err
+		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return encoder.Encode(packets)
+		written, err := writeAll(rw, encoded)
+		if err != nil {
+			return 0, err
+		}
+		return written, nil
 	}
 	state := sessionState{}
 	batches := 0
@@ -374,11 +389,13 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 					}
 				}
 				if len(packets) > 0 {
-					if err := writePackets(packets); err != nil {
+					bytesOut, err := writePackets(packets)
+					if err != nil {
 						h.logger.Debug("tcp event push write failed", "error", err)
 						cancel()
 						return
 					}
+					h.recordUserUsage(pushCtx, userPublicKey, 0, 0, bytesOut)
 					continue
 				}
 
@@ -408,24 +425,27 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 			return fmt.Errorf("decode stream batch: %w", err)
 		}
 
-		responses, nextState, _ := h.handleBatch(ctx, payload, state)
+		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state)
 		state = nextState
 
 		if state.Authenticated {
 			startPush(state.UserPublicKey)
 		}
 
-		if err := writePackets(responses); err != nil {
+		bytesOut, err := writePackets(responses)
+		if err != nil {
+			h.recordUsage(ctx, state, requestCount, len(payload), 0)
 			if stopPush != nil {
 				stopPush()
 				stopPush = nil
 			}
 			return fmt.Errorf("encode stream batch: %w", err)
 		}
+		h.recordUsage(ctx, state, requestCount, len(payload), bytesOut)
 		batches++
 		h.logger.Info(
 			"tcp rpc batch completed",
-			"request_count", len(payload),
+			"request_count", requestCount,
 			"response_count", len(responses),
 			"authenticated", state.Authenticated,
 			"profile_completed", state.ProfileCompleted,
@@ -433,7 +453,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	}
 }
 
-func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionState) ([]rpc.ResponsePacket, sessionState, int) {
+func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionState) ([]rpc.ResponsePacket, sessionState, int, int) {
 	var packets []rpc.RequestPacket
 	if err := cbor.Unmarshal(raw, &packets); err != nil {
 		var packet rpc.RequestPacket
@@ -444,13 +464,13 @@ func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionStat
 				EventType:  "rpcCallResponse",
 				Parameters: map[string]any{"error": rpc.ErrorBody{Code: "bad_request", Message: "invalid cbor payload"}},
 			}
-			return []rpc.ResponsePacket{response}, state, http.StatusBadRequest
+			return []rpc.ResponsePacket{response}, state, http.StatusBadRequest, 0
 		}
 		packets = []rpc.RequestPacket{packet}
 	}
 
 	responses, nextState, statusCode := h.handlePackets(ctx, packets, state)
-	return responses, nextState, statusCode
+	return responses, nextState, statusCode, len(packets)
 }
 
 func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket, state sessionState) ([]rpc.ResponsePacket, sessionState, int) {
@@ -797,4 +817,36 @@ func maxStatus(current int, candidate int) int {
 		return candidate
 	}
 	return current
+}
+
+func (h *Handler) recordUsage(ctx context.Context, state sessionState, requests int, bytesIn int, bytesOut int) {
+	if !state.Authenticated {
+		return
+	}
+	h.recordUserUsage(ctx, state.UserPublicKey, requests, bytesIn, bytesOut)
+}
+
+func (h *Handler) recordUserUsage(ctx context.Context, userPublicKey []byte, requests int, bytesIn int, bytesOut int) {
+	if h.clientService == nil || len(userPublicKey) != ed25519.PublicKeySize {
+		return
+	}
+	if err := h.clientService.RecordUserUsage(ctx, userPublicKey, requests, bytesIn, bytesOut); err != nil {
+		h.logger.Debug("failed to record user usage", "error", err)
+	}
+}
+
+func writeAll(w io.Writer, payload []byte) (int, error) {
+	total := 0
+	for len(payload) > 0 {
+		n, err := w.Write(payload)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n <= 0 {
+			return total, io.ErrUnexpectedEOF
+		}
+		payload = payload[n:]
+	}
+	return total, nil
 }
