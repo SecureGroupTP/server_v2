@@ -20,6 +20,7 @@ import (
 	clientapi "server_v2/internal/application/clientapi"
 	domainauth "server_v2/internal/domain/auth"
 	"server_v2/internal/domain/rpc"
+	"server_v2/internal/platform/eventbus"
 	"server_v2/internal/platform/logging"
 	appserver "server_v2/internal/server"
 )
@@ -35,6 +36,7 @@ type Handler struct {
 	authService      *appauth.Service
 	clientService    *clientapi.Service
 	httpConnSessions *httpConnectionSessions
+	bus              *eventbus.Bus
 }
 
 type sessionState struct {
@@ -76,12 +78,13 @@ type unsubscribeFromEventsParams struct {
 	RequestedAt    int64     `cbor:"requestedAt"`
 }
 
-func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service) *Handler {
+func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service, bus *eventbus.Bus) *Handler {
 	return &Handler{
 		logger:           logging.WithSource(logger, "server_v2/internal/delivery/clientrpc.Handler"),
 		authService:      authService,
 		clientService:    clientService,
 		httpConnSessions: newHTTPConnectionSessions(),
+		bus:              bus,
 	}
 }
 
@@ -195,6 +198,21 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("websocket upgrade failed", "path", r.URL.Path, "remote_addr", r.RemoteAddr, "error", err)
 		return
 	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	var writeMu sync.Mutex
+	writePackets := func(packets []rpc.ResponsePacket) error {
+		encoded, err := cbor.Marshal(packets)
+		if err != nil {
+			return err
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		return conn.WriteMessage(websocket.BinaryMessage, encoded)
+	}
+
 	defer func() {
 		_ = conn.Close()
 		h.logger.Info("websocket connection closed", "remote_addr", r.RemoteAddr, "duration_ms", time.Since(startedAt).Milliseconds())
@@ -202,10 +220,70 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("websocket connection accepted", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 
 	state := sessionState{}
+	var stopPush func()
+	startPush := func(userPublicKey []byte) {
+		if stopPush != nil || h.bus == nil || len(userPublicKey) == 0 || h.authService == nil {
+			return
+		}
+		notifyCh, unsubscribe := h.bus.Subscribe(userPublicKey)
+		pushCtx, pushCancel := context.WithCancel(ctx)
+		var stopOnce sync.Once
+		stop := func() {
+			stopOnce.Do(func() {
+				pushCancel()
+				unsubscribe()
+			})
+		}
+		stopPush = stop
+
+		// Flush any backlog immediately, then wait for new events.
+		go func() {
+			defer stop()
+			for {
+				select {
+				case <-pushCtx.Done():
+					return
+				default:
+				}
+
+				packets, err := h.pullEventPackets(pushCtx, userPublicKey)
+				if err != nil {
+					h.logger.Debug("websocket event push pull failed", "remote_addr", r.RemoteAddr, "error", err)
+					// If we can't pull events, wait for the next signal.
+					select {
+					case <-notifyCh:
+						continue
+					case <-pushCtx.Done():
+						return
+					}
+				}
+				if len(packets) > 0 {
+					if err := writePackets(packets); err != nil {
+						h.logger.Debug("websocket event push write failed", "remote_addr", r.RemoteAddr, "error", err)
+						cancel()
+						return
+					}
+					// More events may already be queued; keep draining.
+					continue
+				}
+
+				select {
+				case <-notifyCh:
+				case <-pushCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
 			h.logger.Debug("websocket read stopped", "remote_addr", r.RemoteAddr, "error", err)
+			if stopPush != nil {
+				stopPush()
+				stopPush = nil
+			}
 			return
 		}
 		if messageType != websocket.BinaryMessage {
@@ -213,23 +291,26 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		responses, nextState, _ := h.handleBatch(r.Context(), payload, state)
+		responses, nextState, _ := h.handleBatch(ctx, payload, state)
 		state = nextState
-		encoded, err := cbor.Marshal(responses)
-		if err != nil {
-			h.logger.Error("failed to encode websocket rpc response", "remote_addr", r.RemoteAddr, "response_count", len(responses), "error", err)
-			return
+
+		// Start async event push after the connection becomes authenticated.
+		if state.Authenticated {
+			startPush(state.UserPublicKey)
 		}
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if err := conn.WriteMessage(websocket.BinaryMessage, encoded); err != nil {
-			h.logger.Warn("failed to write websocket rpc response", "remote_addr", r.RemoteAddr, "response_bytes", len(encoded), "error", err)
+
+		if err := writePackets(responses); err != nil {
+			h.logger.Warn("failed to write websocket rpc response", "remote_addr", r.RemoteAddr, "response_count", len(responses), "error", err)
+			if stopPush != nil {
+				stopPush()
+				stopPush = nil
+			}
 			return
 		}
 		h.logger.Info(
 			"websocket rpc batch completed",
 			"remote_addr", r.RemoteAddr,
 			"request_bytes", len(payload),
-			"response_bytes", len(encoded),
 			"response_count", len(responses),
 			"authenticated", state.Authenticated,
 			"profile_completed", state.ProfileCompleted,
@@ -239,8 +320,17 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	startedAt := time.Now()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	decoder := cbor.NewDecoder(rw)
 	encoder := cbor.NewEncoder(rw)
+	var writeMu sync.Mutex
+	writePackets := func(packets []rpc.ResponsePacket) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return encoder.Encode(packets)
+	}
 	state := sessionState{}
 	batches := 0
 	h.logger.Info("tcp rpc stream started")
@@ -248,18 +338,88 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 		h.logger.Info("tcp rpc stream stopped", "batch_count", batches, "duration_ms", time.Since(startedAt).Milliseconds())
 	}()
 
+	var stopPush func()
+	startPush := func(userPublicKey []byte) {
+		if stopPush != nil || h.bus == nil || len(userPublicKey) == 0 || h.authService == nil {
+			return
+		}
+		notifyCh, unsubscribe := h.bus.Subscribe(userPublicKey)
+		pushCtx, pushCancel := context.WithCancel(ctx)
+		var stopOnce sync.Once
+		stop := func() {
+			stopOnce.Do(func() {
+				pushCancel()
+				unsubscribe()
+			})
+		}
+		stopPush = stop
+
+		go func() {
+			defer stop()
+			for {
+				select {
+				case <-pushCtx.Done():
+					return
+				default:
+				}
+
+				packets, err := h.pullEventPackets(pushCtx, userPublicKey)
+				if err != nil {
+					h.logger.Debug("tcp event push pull failed", "error", err)
+					select {
+					case <-notifyCh:
+						continue
+					case <-pushCtx.Done():
+						return
+					}
+				}
+				if len(packets) > 0 {
+					if err := writePackets(packets); err != nil {
+						h.logger.Debug("tcp event push write failed", "error", err)
+						cancel()
+						return
+					}
+					continue
+				}
+
+				select {
+				case <-notifyCh:
+				case <-pushCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	for {
 		var payload cbor.RawMessage
 		if err := decoder.Decode(&payload); err != nil {
 			if errors.Is(err, io.EOF) {
+				if stopPush != nil {
+					stopPush()
+					stopPush = nil
+				}
 				return nil
+			}
+			if stopPush != nil {
+				stopPush()
+				stopPush = nil
 			}
 			return fmt.Errorf("decode stream batch: %w", err)
 		}
 
 		responses, nextState, _ := h.handleBatch(ctx, payload, state)
 		state = nextState
-		if err := encoder.Encode(responses); err != nil {
+
+		if state.Authenticated {
+			startPush(state.UserPublicKey)
+		}
+
+		if err := writePackets(responses); err != nil {
+			if stopPush != nil {
+				stopPush()
+				stopPush = nil
+			}
 			return fmt.Errorf("encode stream batch: %w", err)
 		}
 		batches++
@@ -343,6 +503,30 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 	)
 	return responses, currentState, statusCode
+}
+
+func (h *Handler) pullEventPackets(ctx context.Context, userPublicKey []byte) ([]rpc.ResponsePacket, error) {
+	if h.authService == nil || len(userPublicKey) == 0 {
+		return nil, nil
+	}
+	events, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: userPublicKey})
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	packets := make([]rpc.ResponsePacket, 0, len(events))
+	for _, event := range events {
+		eventID := event.EventID
+		packets = append(packets, rpc.ResponsePacket{
+			RequestID:        eventID,
+			ReplyToRequestID: event.ReplyToRequestID,
+			EventType:        event.EventType,
+			Parameters:       event.Payload,
+		})
+	}
+	return packets, nil
 }
 
 func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, state sessionState) (rpc.ResponsePacket, sessionState, error) {

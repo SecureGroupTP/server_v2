@@ -13,6 +13,7 @@ import (
 	"server_v2/internal/config"
 	"server_v2/internal/delivery/clientrpc"
 	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/eventbus"
 	"server_v2/internal/platform/logging"
 	"server_v2/internal/platform/randombytes"
 	"server_v2/internal/platform/uuidx"
@@ -61,6 +62,8 @@ func main() {
 	authRepository := postgres.NewAuthRepository(store.DB())
 	clientRepository := postgres.NewClientRepository(store.DB())
 	txManager := postgres.NewTxManager(store.DB())
+	bus := eventbus.New()
+	notifyingEvents := eventbus.NewNotifyingEventRepository(authRepository, bus)
 	authService, err := appauth.NewService(
 		appauth.Config{
 			ChallengeTTL:   cfg.App.SessionChallengeTTL,
@@ -73,7 +76,7 @@ func main() {
 		txManager,
 		authRepository,
 		authRepository,
-		authRepository,
+		notifyingEvents,
 	)
 	if err != nil {
 		logger.Error("failed to initialize auth service", "error", err)
@@ -93,7 +96,7 @@ func main() {
 		uuidx.DefaultGenerator{},
 		txManager,
 		clientRepository,
-		authRepository,
+		notifyingEvents,
 		authService,
 	)
 	if err != nil {
@@ -102,7 +105,7 @@ func main() {
 	}
 	logger.Info("client api service initialized")
 
-	clientHandler := clientrpc.NewHandler(logger, authService, clientService)
+	clientHandler := clientrpc.NewHandler(logger, authService, clientService, bus)
 	httpConnectionBinder := appserver.NewHTTPConnectionBinder(clientHandler)
 	httpHandler := appserver.NewHandler(logger, cfg.App.OutputPorts, clientHandler)
 	runtime := appserver.NewRuntime(cfg.App, httpHandler, clientHandler, httpConnectionBinder, logger)

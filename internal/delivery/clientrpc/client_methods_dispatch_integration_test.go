@@ -104,7 +104,7 @@ func (s *dispatchStore) GetRoomWelcome(context.Context, uuid.UUID, []byte) (clie
 	return clientapi.ChatRoomWelcomeRecord{WelcomeBytes: []byte("welcome")}, nil
 }
 func (s *dispatchStore) DeleteRoomWelcomesByTargetUser(context.Context, []byte) error { return nil }
-func (s *dispatchStore) AreFriends(context.Context, []byte, []byte) (bool, error) { return true, nil }
+func (s *dispatchStore) AreFriends(context.Context, []byte, []byte) (bool, error)     { return true, nil }
 func (s *dispatchStore) ListFriends(context.Context, []byte, int, int) ([]clientapi.FriendRecord, error) {
 	return []clientapi.FriendRecord{{ID: uuid.New(), UserPublicKey: key(1), FriendPublicKey: key(2), AcceptedAt: s.now}}, nil
 }
@@ -230,7 +230,7 @@ func TestDispatchClientMethodRoutesAllGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client service: %v", err)
 	}
-	handler := NewHandler(slog.Default(), nil, service)
+	handler := NewHandler(slog.Default(), nil, service, nil)
 	state := sessionState{SessionID: uuid.New(), UserPublicKey: key(1), Authenticated: true, ProfileCompleted: true}
 	params := map[string]any{
 		"userPublicKey":        key(2),

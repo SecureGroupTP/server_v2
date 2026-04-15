@@ -26,6 +26,7 @@ import (
 	"server_v2/internal/delivery/clientrpc"
 	"server_v2/internal/domain/rpc"
 	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/eventbus"
 	"server_v2/internal/platform/logging"
 	"server_v2/internal/platform/randombytes"
 	"server_v2/internal/platform/uuidx"
@@ -150,7 +151,8 @@ func newTestServer(t *testing.T) *testServer {
 	ports := testPorts(t)
 	logs := &testLogSink{}
 	logger := logging.WithSource(logging.NewLogger(logs, slog.LevelDebug), "integration/clientrpc.social_flow")
-	clientHandler := clientrpc.NewHandler(logger, authService, clientService)
+	bus := eventbus.New()
+	clientHandler := clientrpc.NewHandler(logger, authService, clientService, bus)
 	httpBinder := appserver.NewHTTPConnectionBinder(clientHandler)
 	httpHandler := appserver.NewHandler(logger, ports, clientHandler)
 	cfg := config.AppConfiguration{

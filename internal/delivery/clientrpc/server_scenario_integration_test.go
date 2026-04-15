@@ -48,7 +48,7 @@ func TestServerScenarioProfileFriendRoomMessage(t *testing.T) {
 		t.Fatalf("new client service: %v", err)
 	}
 
-	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), authService, clientService)
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), authService, clientService, nil)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	binder := appserver.NewHTTPConnectionBinder(handler)

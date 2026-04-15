@@ -20,6 +20,7 @@ import (
 	clientapi "server_v2/internal/application/clientapi"
 	"server_v2/internal/domain/rpc"
 	"server_v2/internal/platform/clock"
+	"server_v2/internal/platform/eventbus"
 	"server_v2/internal/platform/randombytes"
 	"server_v2/internal/platform/uuidx"
 	"server_v2/internal/repository/postgres"
@@ -183,7 +184,7 @@ func newHandlerTestClient(t *testing.T) (*http.Client, string) {
 		t.Fatalf("new client service: %v", err)
 	}
 
-	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service, clientService)
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service, clientService, eventbus.New())
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
