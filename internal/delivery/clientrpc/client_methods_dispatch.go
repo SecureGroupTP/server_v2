@@ -21,7 +21,7 @@ func (h *Handler) dispatchClientMethod(ctx context.Context, rpcCall string, para
 		return h.handleInvitationMethods(ctx, rpcCall, params, state)
 	case "sendMessage":
 		return h.handleMessageMethods(ctx, rpcCall, params, state)
-	case "getServerLimits", "getUserLimits", "getGroupLimits", "getServerConfig":
+	case "getServerLimits", "getUserLimits", "getGroupLimits", "getMyUsageStats", "getServerConfig":
 		return h.handleOverviewMethods(ctx, rpcCall, params, state)
 	default:
 		return nil, fmt.Errorf("rpc %s is not implemented yet", rpcCall)
