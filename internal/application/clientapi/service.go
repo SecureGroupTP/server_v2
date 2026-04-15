@@ -220,6 +220,13 @@ func (s *Service) UploadKeyPackages(ctx context.Context, sessionID uuid.UUID, us
 		if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
 			return nil, err
 		}
+		// Any stored direct-room Welcome intended for this user is now potentially
+		// stale because key packages are rotated per-device. Prefer "not_found" so
+		// the inviter can re-issue a fresh Welcome instead of clients looping on
+		// an un-joinable recovery Welcome.
+		if err := s.store.DeleteRoomWelcomesByTargetUser(ctx, user); err != nil {
+			return nil, err
+		}
 	}
 	recordedCount, err := s.store.InsertKeyPackages(ctx, records)
 	if err != nil {

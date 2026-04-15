@@ -18,11 +18,12 @@ func profileToMap(record ProfileRecord) map[string]any {
 
 func roomToMap(record ChatRoomRecord) map[string]any {
 	return map[string]any{
-		"roomId":      record.RoomID,
-		"title":       record.Title,
-		"description": nullableString(record.Description),
-		"visibility":  int(record.Visibility),
-		"stateId":     record.StateID,
+		"roomId":         record.RoomID,
+		"ownerPublicKey": record.OwnerPublicKey,
+		"title":          record.Title,
+		"description":    nullableString(record.Description),
+		"visibility":     int(record.Visibility),
+		"stateId":        record.StateID,
 	}
 }
 

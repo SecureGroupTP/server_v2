@@ -341,6 +341,14 @@ WHERE room_id = $1 AND target_user_public_key = $2
 	return out, nil
 }
 
+func (r *ClientRepository) DeleteRoomWelcomesByTargetUser(ctx context.Context, targetUserPublicKey []byte) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+DELETE FROM chat_room_welcomes
+WHERE target_user_public_key = $1
+`, targetUserPublicKey)
+	return err
+}
+
 func (r *ClientRepository) AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error) {
 	row := r.dbtx(ctx).QueryRowContext(ctx, `
 SELECT EXISTS (

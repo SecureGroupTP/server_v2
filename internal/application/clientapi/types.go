@@ -71,6 +71,7 @@ type Store interface {
 	IsDirectRoom(ctx context.Context, roomID uuid.UUID) (bool, error)
 	UpsertRoomWelcome(ctx context.Context, welcome ChatRoomWelcomeRecord) error
 	GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (ChatRoomWelcomeRecord, error)
+	DeleteRoomWelcomesByTargetUser(ctx context.Context, targetUserPublicKey []byte) error
 
 	AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error)
 	ListFriends(ctx context.Context, userPublicKey []byte, limit int, offset int) ([]FriendRecord, error)

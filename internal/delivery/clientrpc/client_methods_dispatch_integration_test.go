@@ -103,6 +103,7 @@ func (s *dispatchStore) UpsertRoomWelcome(context.Context, clientapi.ChatRoomWel
 func (s *dispatchStore) GetRoomWelcome(context.Context, uuid.UUID, []byte) (clientapi.ChatRoomWelcomeRecord, error) {
 	return clientapi.ChatRoomWelcomeRecord{WelcomeBytes: []byte("welcome")}, nil
 }
+func (s *dispatchStore) DeleteRoomWelcomesByTargetUser(context.Context, []byte) error { return nil }
 func (s *dispatchStore) AreFriends(context.Context, []byte, []byte) (bool, error) { return true, nil }
 func (s *dispatchStore) ListFriends(context.Context, []byte, int, int) ([]clientapi.FriendRecord, error) {
 	return []clientapi.FriendRecord{{ID: uuid.New(), UserPublicKey: key(1), FriendPublicKey: key(2), AcceptedAt: s.now}}, nil

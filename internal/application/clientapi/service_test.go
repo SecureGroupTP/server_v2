@@ -33,6 +33,7 @@ type storeMock struct {
 	memberCreated  ChatMemberRecord
 	groupInfo      ChatRoomGroupInfoRecord
 	welcome        ChatRoomWelcomeRecord
+	welcomesDeletedForTarget []byte
 	avatar         AvatarRecord
 	devices        []DeviceRecord
 	device         DeviceRecord
@@ -120,6 +121,10 @@ func (s *storeMock) UpsertRoomWelcome(_ context.Context, welcome ChatRoomWelcome
 }
 func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
 	return s.welcome, nil
+}
+func (s *storeMock) DeleteRoomWelcomesByTargetUser(_ context.Context, targetUserPublicKey []byte) error {
+	s.welcomesDeletedForTarget = append([]byte(nil), targetUserPublicKey...)
+	return nil
 }
 func (s *storeMock) AreFriends(context.Context, []byte, []byte) (bool, error) {
 	return s.areFriends, nil
@@ -990,6 +995,9 @@ func TestServiceCoversRemainingRPCSuccessPaths(t *testing.T) {
 		"expiresAt":       expiresAt,
 	}}); err != nil || response["recordedCount"] != 1 || len(store.keyPackages) != 1 || !store.keyPackages[0].IsLastResort {
 		t.Fatalf("upload key packages response=%#v records=%#v err=%v", response, store.keyPackages, err)
+	}
+	if string(store.welcomesDeletedForTarget) != string(user) {
+		t.Fatalf("expected welcomes to be invalidated for target user")
 	}
 	if response, err := service.FetchKeyPackages(context.Background(), [][]byte{peer}); err != nil || len(response["items"].([]map[string]any)) != 1 {
 		t.Fatalf("fetch key packages response=%#v err=%v", response, err)
