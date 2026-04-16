@@ -138,6 +138,25 @@ func TestHandlerAuthHTTPFlow(t *testing.T) {
 	if code := extractErrorCode(t, unauthenticatedResponse[0].Parameters); code != "unauthenticated" {
 		t.Fatalf("unexpected unauthenticated response: %#v", unauthenticatedResponse[0].Parameters)
 	}
+
+	ackRequestID := uuid.New()
+	ackPayload := rpc.RequestPayload{
+		RequestID: ackRequestID,
+		RPCCall:   "acknowledgeEvent",
+		Timestamp: time.Now().UnixMilli(),
+		Version:   2,
+		Parameters: mustCBOR(t, map[string]any{
+			"eventId": uuid.New().String(),
+		}),
+	}
+	ackPacket := mustSignedPacket(t, privateKey, ackPayload)
+	ackResponse := postPackets(t, client, serverURL, []rpc.RequestPacket{ackPacket})
+	if len(ackResponse) != 1 {
+		t.Fatalf("expected one ack response, got %d packets", len(ackResponse))
+	}
+	if _, ok := ackResponse[0].Parameters["error"]; ok {
+		t.Fatalf("unexpected ack error: %#v", ackResponse[0].Parameters)
+	}
 }
 
 func newHandlerTestClient(t *testing.T) (*http.Client, string) {

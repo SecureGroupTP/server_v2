@@ -81,7 +81,7 @@ type unsubscribeFromEventsParams struct {
 }
 
 type acknowledgeEventParams struct {
-	EventID uuid.UUID `cbor:"eventId"`
+	EventID any `cbor:"eventId"`
 }
 
 func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service, bus *eventbus.Bus) *Handler {
@@ -700,9 +700,14 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
 		}
+		eventID, err := parseUUIDParam(params.EventID)
+		if err != nil {
+			h.logRPCFailure(payload, domainauth.ErrInvalidEventID, startedAt)
+			return h.errorResponse(payload.RequestID, domainauth.ErrInvalidEventID), state, domainauth.ErrInvalidEventID
+		}
 		if _, err := h.authService.AcknowledgeEvent(ctx, appauth.AcknowledgeEventInput{
 			UserPublicKey: nextState.UserPublicKey,
-			EventID:       params.EventID,
+			EventID:       eventID,
 		}); err != nil {
 			h.logRPCFailure(payload, err, startedAt)
 			return h.errorResponse(payload.RequestID, err), state, err
@@ -828,7 +833,8 @@ func mapError(err error) (string, string) {
 		errors.Is(err, domainauth.ErrInvalidSessionID),
 		errors.Is(err, domainauth.ErrInvalidSignature),
 		errors.Is(err, domainauth.ErrInvalidDeviceID),
-		errors.Is(err, domainauth.ErrInvalidClientNonce):
+		errors.Is(err, domainauth.ErrInvalidClientNonce),
+		errors.Is(err, domainauth.ErrInvalidEventID):
 		return "invalid_argument", err.Error()
 	case errors.Is(err, domainauth.ErrSessionNotFound),
 		errors.Is(err, domainauth.ErrSubscriptionNotFound),
@@ -868,6 +874,30 @@ func (h *Handler) recordUserUsage(ctx context.Context, userPublicKey []byte, req
 	}
 	if err := h.clientService.RecordUserUsage(ctx, userPublicKey, requests, bytesIn, bytesOut); err != nil {
 		h.logger.Debug("failed to record user usage", "error", err)
+	}
+}
+
+func parseUUIDParam(value any) (uuid.UUID, error) {
+	switch v := value.(type) {
+	case uuid.UUID:
+		if v == uuid.Nil {
+			return uuid.Nil, domainauth.ErrInvalidEventID
+		}
+		return v, nil
+	case []byte:
+		id, err := uuid.FromBytes(v)
+		if err != nil || id == uuid.Nil {
+			return uuid.Nil, domainauth.ErrInvalidEventID
+		}
+		return id, nil
+	case string:
+		id, err := uuid.Parse(v)
+		if err != nil || id == uuid.Nil {
+			return uuid.Nil, domainauth.ErrInvalidEventID
+		}
+		return id, nil
+	default:
+		return uuid.Nil, domainauth.ErrInvalidEventID
 	}
 }
 

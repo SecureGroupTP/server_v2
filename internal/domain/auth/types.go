@@ -16,6 +16,7 @@ var (
 	ErrInvalidSignature        = errors.New("invalid signature")
 	ErrInvalidDeviceID         = errors.New("invalid device id")
 	ErrInvalidClientNonce      = errors.New("invalid client nonce")
+	ErrInvalidEventID          = errors.New("invalid event id")
 	ErrSubscriptionNotFound    = errors.New("subscription not found")
 )
 

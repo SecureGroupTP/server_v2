@@ -352,7 +352,7 @@ func (s *Service) AcknowledgeEvent(ctx context.Context, input AcknowledgeEventIn
 		return AcknowledgeEventOutput{}, domainauth.ErrInvalidPublicKey
 	}
 	if input.EventID == uuid.Nil {
-		return AcknowledgeEventOutput{}, fmt.Errorf("invalid event id")
+		return AcknowledgeEventOutput{}, domainauth.ErrInvalidEventID
 	}
 	if err := s.events.Acknowledge(ctx, input.UserPublicKey, input.EventID); err != nil {
 		return AcknowledgeEventOutput{}, err
