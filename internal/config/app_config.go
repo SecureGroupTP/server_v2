@@ -57,8 +57,8 @@ func (a AppConfiguration) Validate() error {
 	if a.EventBatchSize <= 0 {
 		return fmt.Errorf("app.event_batch_size must be > 0")
 	}
-	if a.EventRedeliveryCooldown <= 0 {
-		return fmt.Errorf("app.event_redelivery_cooldown must be > 0")
+	if a.EventRedeliveryCooldown < 0 {
+		return fmt.Errorf("app.event_redelivery_cooldown must be >= 0")
 	}
 
 	return nil
