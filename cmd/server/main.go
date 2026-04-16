@@ -66,9 +66,10 @@ func main() {
 	notifyingEvents := eventbus.NewNotifyingEventRepository(authRepository, bus)
 	authService, err := appauth.NewService(
 		appauth.Config{
-			ChallengeTTL:   cfg.App.SessionChallengeTTL,
-			EventRetention: cfg.App.EventRetention,
-			EventBatchSize: cfg.App.EventBatchSize,
+			ChallengeTTL:            cfg.App.SessionChallengeTTL,
+			EventRetention:          cfg.App.EventRetention,
+			EventBatchSize:          cfg.App.EventBatchSize,
+			EventRedeliveryCooldown: cfg.App.EventRedeliveryCooldown,
 		},
 		clock.Real{},
 		uuidx.DefaultGenerator{},

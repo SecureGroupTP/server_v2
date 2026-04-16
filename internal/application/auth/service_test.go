@@ -94,6 +94,7 @@ type eventRepoMock struct {
 	appended []domainauth.Event
 	pending  []domainauth.Event
 	marked   []uuid.UUID
+	acked    []uuid.UUID
 }
 
 func (m *eventRepoMock) Append(_ context.Context, event domainauth.Event) error {
@@ -101,12 +102,17 @@ func (m *eventRepoMock) Append(_ context.Context, event domainauth.Event) error 
 	return nil
 }
 
-func (m *eventRepoMock) ListPending(_ context.Context, _ []byte, _ time.Time, _ int) ([]domainauth.Event, error) {
+func (m *eventRepoMock) ListPending(_ context.Context, _ []byte, _ time.Time, _ time.Time, _ int) ([]domainauth.Event, error) {
 	return append([]domainauth.Event(nil), m.pending...), nil
 }
 
 func (m *eventRepoMock) MarkDelivered(_ context.Context, eventIDs []uuid.UUID, _ time.Time) error {
 	m.marked = append(m.marked, eventIDs...)
+	return nil
+}
+
+func (m *eventRepoMock) Acknowledge(_ context.Context, _ []byte, eventID uuid.UUID) error {
+	m.acked = append(m.acked, eventID)
 	return nil
 }
 
@@ -231,6 +237,34 @@ func TestServicePullEventsMarksDelivered(t *testing.T) {
 	}
 	if len(events.marked) != 1 || events.marked[0] != eventID {
 		t.Fatalf("expected event %s marked delivered, got %#v", eventID, events.marked)
+	}
+}
+
+func TestServiceAcknowledgeEventDeletes(t *testing.T) {
+	userPublicKey := make([]byte, ed25519.PublicKeySize)
+	now := time.Date(2026, 4, 11, 11, 0, 0, 0, time.UTC)
+	eventID := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+
+	events := &eventRepoMock{}
+	service, err := NewService(
+		Config{ChallengeTTL: time.Minute, EventRetention: time.Hour, EventBatchSize: 10},
+		fixedClock{now: now},
+		&sequenceUUIDGenerator{ids: []uuid.UUID{uuid.New()}},
+		fixedRandomReader{data: make([]byte, challengeSize)},
+		noopTxManager{},
+		&sessionRepoMock{},
+		&subscriptionRepoMock{},
+		events,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	if _, err := service.AcknowledgeEvent(context.Background(), AcknowledgeEventInput{UserPublicKey: userPublicKey, EventID: eventID}); err != nil {
+		t.Fatalf("ack event: %v", err)
+	}
+	if len(events.acked) != 1 || events.acked[0] != eventID {
+		t.Fatalf("expected event %s acked, got %#v", eventID, events.acked)
 	}
 }
 

@@ -203,17 +203,17 @@ INSERT INTO user_events (
 	return nil
 }
 
-func (r *AuthRepository) ListPending(ctx context.Context, userPublicKey []byte, now time.Time, limit int) ([]domainauth.Event, error) {
+func (r *AuthRepository) ListPending(ctx context.Context, userPublicKey []byte, now time.Time, redeliverBefore time.Time, limit int) ([]domainauth.Event, error) {
 	rows, err := r.dbtx(ctx).QueryContext(ctx, `
 SELECT event_id, user_public_key, reply_to_request_id, event_type, payload, available_at, expires_at, delivered_at, created_at
 FROM user_events
 WHERE user_public_key = $1
-  AND delivered_at IS NULL
+  AND (delivered_at IS NULL OR delivered_at <= $3)
   AND available_at <= $2
   AND expires_at > $2
 ORDER BY created_at ASC
-LIMIT $3
-`, userPublicKey, now, limit)
+LIMIT $4
+`, userPublicKey, now, redeliverBefore, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query pending user events: %w", err)
 	}
@@ -260,6 +260,17 @@ WHERE event_id = ANY($1)
 `, eventIDs, deliveredAt)
 	if err != nil {
 		return fmt.Errorf("mark user events delivered: %w", err)
+	}
+	return nil
+}
+
+func (r *AuthRepository) Acknowledge(ctx context.Context, userPublicKey []byte, eventID uuid.UUID) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+DELETE FROM user_events
+WHERE event_id = $1 AND user_public_key = $2
+`, eventID, userPublicKey)
+	if err != nil {
+		return fmt.Errorf("acknowledge user event: %w", err)
 	}
 	return nil
 }

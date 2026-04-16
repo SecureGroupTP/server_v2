@@ -15,6 +15,7 @@ app:
   session_challenge_ttl: 5m
   event_retention: 24h
   event_batch_size: 100
+  event_redelivery_cooldown: 5s
 
 logger:
   level: info

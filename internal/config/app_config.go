@@ -7,14 +7,15 @@ import (
 )
 
 type AppConfiguration struct {
-	Name                string                `yaml:"name"`
-	Host                string                `yaml:"host"`
-	Ports               AppPortsConfiguration `yaml:"ports"`
-	OutputPorts         AppPortsConfiguration `yaml:"output_ports"`
-	SessionChallengeTTL time.Duration         `yaml:"session_challenge_ttl"`
-	EventRetention      time.Duration         `yaml:"event_retention"`
-	EventBatchSize      int                   `yaml:"event_batch_size"`
-	TLS                 AppTLSConfiguration   `yaml:"tls"`
+	Name                    string                `yaml:"name"`
+	Host                    string                `yaml:"host"`
+	Ports                   AppPortsConfiguration `yaml:"ports"`
+	OutputPorts             AppPortsConfiguration `yaml:"output_ports"`
+	SessionChallengeTTL     time.Duration         `yaml:"session_challenge_ttl"`
+	EventRetention          time.Duration         `yaml:"event_retention"`
+	EventBatchSize          int                   `yaml:"event_batch_size"`
+	EventRedeliveryCooldown time.Duration         `yaml:"event_redelivery_cooldown"`
+	TLS                     AppTLSConfiguration   `yaml:"tls"`
 }
 
 type AppPortsConfiguration struct {
@@ -55,6 +56,9 @@ func (a AppConfiguration) Validate() error {
 	}
 	if a.EventBatchSize <= 0 {
 		return fmt.Errorf("app.event_batch_size must be > 0")
+	}
+	if a.EventRedeliveryCooldown <= 0 {
+		return fmt.Errorf("app.event_redelivery_cooldown must be > 0")
 	}
 
 	return nil

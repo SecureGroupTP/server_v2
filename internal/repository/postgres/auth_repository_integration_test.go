@@ -80,7 +80,7 @@ func TestAuthRepositoryRoundTrip(t *testing.T) {
 		t.Fatalf("append event: %v", err)
 	}
 
-	events, err := repo.ListPending(context.Background(), userPublicKey, now.Add(time.Second), 10)
+	events, err := repo.ListPending(context.Background(), userPublicKey, now.Add(time.Second), now.Add(time.Second), 10)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -90,6 +90,35 @@ func TestAuthRepositoryRoundTrip(t *testing.T) {
 
 	if err := repo.MarkDelivered(context.Background(), []uuid.UUID{eventID}, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("mark delivered: %v", err)
+	}
+
+	// Should not be re-listed until the cooldown window passes.
+	events, err = repo.ListPending(context.Background(), userPublicKey, now.Add(3*time.Second), now.Add(time.Second), 10)
+	if err != nil {
+		t.Fatalf("list events after delivery: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no events within cooldown, got %d", len(events))
+	}
+
+	// Redeliver once delivered_at is older than the redelivery cutoff.
+	events, err = repo.ListPending(context.Background(), userPublicKey, now.Add(10*time.Second), now.Add(4*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list events after cooldown: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected event redelivery after cooldown, got %d", len(events))
+	}
+
+	if err := repo.Acknowledge(context.Background(), userPublicKey, eventID); err != nil {
+		t.Fatalf("ack event: %v", err)
+	}
+	events, err = repo.ListPending(context.Background(), userPublicKey, now.Add(11*time.Second), now.Add(11*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list events after ack: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no events after ack, got %d", len(events))
 	}
 }
 

@@ -12,8 +12,9 @@ import (
 // EventRepository is the minimal interface needed by auth.Service.
 type EventRepository interface {
 	Append(ctx context.Context, event domainauth.Event) error
-	ListPending(ctx context.Context, userPublicKey []byte, now time.Time, limit int) ([]domainauth.Event, error)
+	ListPending(ctx context.Context, userPublicKey []byte, now time.Time, redeliverBefore time.Time, limit int) ([]domainauth.Event, error)
 	MarkDelivered(ctx context.Context, eventIDs []uuid.UUID, deliveredAt time.Time) error
+	Acknowledge(ctx context.Context, userPublicKey []byte, eventID uuid.UUID) error
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
@@ -38,12 +39,16 @@ func (r *NotifyingEventRepository) Append(ctx context.Context, event domainauth.
 	return nil
 }
 
-func (r *NotifyingEventRepository) ListPending(ctx context.Context, userPublicKey []byte, now time.Time, limit int) ([]domainauth.Event, error) {
-	return r.inner.ListPending(ctx, userPublicKey, now, limit)
+func (r *NotifyingEventRepository) ListPending(ctx context.Context, userPublicKey []byte, now time.Time, redeliverBefore time.Time, limit int) ([]domainauth.Event, error) {
+	return r.inner.ListPending(ctx, userPublicKey, now, redeliverBefore, limit)
 }
 
 func (r *NotifyingEventRepository) MarkDelivered(ctx context.Context, eventIDs []uuid.UUID, deliveredAt time.Time) error {
 	return r.inner.MarkDelivered(ctx, eventIDs, deliveredAt)
+}
+
+func (r *NotifyingEventRepository) Acknowledge(ctx context.Context, userPublicKey []byte, eventID uuid.UUID) error {
+	return r.inner.Acknowledge(ctx, userPublicKey, eventID)
 }
 
 func (r *NotifyingEventRepository) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {

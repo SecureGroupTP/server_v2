@@ -89,4 +89,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.App.EventBatchSize = size
 		}
 	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_EVENT_REDELIVERY_COOLDOWN")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.EventRedeliveryCooldown = duration
+		}
+	}
 }

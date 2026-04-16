@@ -43,15 +43,17 @@ type SubscriptionRepository interface {
 
 type EventRepository interface {
 	Append(ctx context.Context, event domainauth.Event) error
-	ListPending(ctx context.Context, userPublicKey []byte, now time.Time, limit int) ([]domainauth.Event, error)
+	ListPending(ctx context.Context, userPublicKey []byte, now time.Time, redeliverBefore time.Time, limit int) ([]domainauth.Event, error)
 	MarkDelivered(ctx context.Context, eventIDs []uuid.UUID, deliveredAt time.Time) error
+	Acknowledge(ctx context.Context, userPublicKey []byte, eventID uuid.UUID) error
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
 type Config struct {
-	ChallengeTTL   time.Duration
-	EventRetention time.Duration
-	EventBatchSize int
+	ChallengeTTL            time.Duration
+	EventRetention          time.Duration
+	EventBatchSize          int
+	EventRedeliveryCooldown time.Duration
 }
 
 type RequestAuthChallengeInput struct {
@@ -100,6 +102,13 @@ type PullEventsInput struct {
 	Limit         int
 }
 
+type AcknowledgeEventInput struct {
+	UserPublicKey []byte
+	EventID       uuid.UUID
+}
+
+type AcknowledgeEventOutput struct{}
+
 type Service struct {
 	cfg           Config
 	clock         Clock
@@ -129,6 +138,9 @@ func NewService(
 	}
 	if cfg.EventBatchSize <= 0 {
 		cfg.EventBatchSize = 100
+	}
+	if cfg.EventRedeliveryCooldown <= 0 {
+		cfg.EventRedeliveryCooldown = 5 * time.Second
 	}
 	if clock == nil || uuidGenerator == nil || randomReader == nil || txManager == nil || sessions == nil || subscriptions == nil || events == nil {
 		return nil, fmt.Errorf("all dependencies are required")
@@ -313,7 +325,8 @@ func (s *Service) PullEvents(ctx context.Context, input PullEventsInput) ([]doma
 	}
 
 	now := s.clock.Now()
-	events, err := s.events.ListPending(ctx, input.UserPublicKey, now, limit)
+	redeliverBefore := now.Add(-s.cfg.EventRedeliveryCooldown)
+	events, err := s.events.ListPending(ctx, input.UserPublicKey, now, redeliverBefore, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -332,4 +345,17 @@ func (s *Service) PullEvents(ctx context.Context, input PullEventsInput) ([]doma
 	}
 
 	return events, nil
+}
+
+func (s *Service) AcknowledgeEvent(ctx context.Context, input AcknowledgeEventInput) (AcknowledgeEventOutput, error) {
+	if len(input.UserPublicKey) != ed25519.PublicKeySize {
+		return AcknowledgeEventOutput{}, domainauth.ErrInvalidPublicKey
+	}
+	if input.EventID == uuid.Nil {
+		return AcknowledgeEventOutput{}, fmt.Errorf("invalid event id")
+	}
+	if err := s.events.Acknowledge(ctx, input.UserPublicKey, input.EventID); err != nil {
+		return AcknowledgeEventOutput{}, err
+	}
+	return AcknowledgeEventOutput{}, nil
 }

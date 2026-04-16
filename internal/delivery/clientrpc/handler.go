@@ -31,6 +31,8 @@ var wsUpgrader = websocket.Upgrader{
 	},
 }
 
+const eventRedeliveryPollInterval = 1 * time.Second
+
 type Handler struct {
 	logger           *slog.Logger
 	authService      *appauth.Service
@@ -76,6 +78,10 @@ type subscribeToEventsParams struct {
 type unsubscribeFromEventsParams struct {
 	SubscriptionID uuid.UUID `cbor:"subscriptionId"`
 	RequestedAt    int64     `cbor:"requestedAt"`
+}
+
+type acknowledgeEventParams struct {
+	EventID uuid.UUID `cbor:"eventId"`
 }
 
 func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service, bus *eventbus.Bus) *Handler {
@@ -257,6 +263,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					select {
 					case <-notifyCh:
 						continue
+					case <-time.After(eventRedeliveryPollInterval):
+						continue
 					case <-pushCtx.Done():
 						return
 					}
@@ -275,6 +283,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 				select {
 				case <-notifyCh:
+				case <-time.After(eventRedeliveryPollInterval):
 				case <-pushCtx.Done():
 					return
 				}
@@ -384,6 +393,8 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 					select {
 					case <-notifyCh:
 						continue
+					case <-time.After(eventRedeliveryPollInterval):
+						continue
 					case <-pushCtx.Done():
 						return
 					}
@@ -401,6 +412,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 
 				select {
 				case <-notifyCh:
+				case <-time.After(eventRedeliveryPollInterval):
 				case <-pushCtx.Done():
 					return
 				}
@@ -677,6 +689,30 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 			Parameters: map[string]any{
 				"unsubscribedAt": result.UnsubscribedAt.UTC().Format(time.RFC3339Nano),
 			},
+		}, nextState, nil
+	case "acknowledgeEvent":
+		if !nextState.Authenticated {
+			h.logRPCFailure(payload, domainauth.ErrSessionNotAuthenticated, startedAt)
+			return h.errorResponse(payload.RequestID, domainauth.ErrSessionNotAuthenticated), state, domainauth.ErrSessionNotAuthenticated
+		}
+		var params acknowledgeEventParams
+		if err := rpc.DecodeParameters(payload.Parameters, &params); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
+			return h.errorResponse(payload.RequestID, err), state, err
+		}
+		if _, err := h.authService.AcknowledgeEvent(ctx, appauth.AcknowledgeEventInput{
+			UserPublicKey: nextState.UserPublicKey,
+			EventID:       params.EventID,
+		}); err != nil {
+			h.logRPCFailure(payload, err, startedAt)
+			return h.errorResponse(payload.RequestID, err), state, err
+		}
+		h.logRPCSuccess(payload, nextState, startedAt)
+		return rpc.ResponsePacket{
+			RequestID:        uuid.New(),
+			ReplyToRequestID: &payload.RequestID,
+			EventType:        "rpcCallResponse",
+			Parameters:       map[string]any{},
 		}, nextState, nil
 	default:
 		response, responseState, handledErr := h.handleClientAPICall(ctx, payload, nextState)
