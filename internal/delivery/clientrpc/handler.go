@@ -524,23 +524,6 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 		if len(events) > 0 {
 			responses = append(responses, events...)
 			h.logger.Debug("device events pulled", "session_id", currentState.SessionID.String(), "device_id", currentState.DeviceID, "event_count", len(events))
-		} else if h.authService != nil {
-			legacyEvents, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: currentState.UserPublicKey})
-			if err != nil {
-				h.logger.Error("failed to pull fallback user events", "session_id", currentState.SessionID.String(), "error", err)
-				statusCode = maxStatus(statusCode, http.StatusInternalServerError)
-				return responses, currentState, statusCode
-			}
-			for _, event := range legacyEvents {
-				eventID := event.EventID
-				responses = append(responses, rpc.ResponsePacket{
-					RequestID:        eventID,
-					ReplyToRequestID: event.ReplyToRequestID,
-					EventType:        event.EventType,
-					Parameters:       event.Payload,
-				})
-			}
-			h.logger.Debug("fallback user events pulled", "session_id", currentState.SessionID.String(), "event_count", len(legacyEvents))
 		}
 	} else if currentState.Authenticated && h.authService != nil {
 		events, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: currentState.UserPublicKey})
