@@ -26,6 +26,10 @@ func New() *Bus {
 
 func (b *Bus) Subscribe(userPublicKey []byte) (<-chan struct{}, func()) {
 	key := keyString(userPublicKey)
+	return b.SubscribeKey(key)
+}
+
+func (b *Bus) SubscribeKey(key string) (<-chan struct{}, func()) {
 	ch := make(chan struct{}, 1)
 	id := b.next.Add(1)
 
@@ -55,6 +59,10 @@ func (b *Bus) Subscribe(userPublicKey []byte) (<-chan struct{}, func()) {
 
 func (b *Bus) Notify(userPublicKey []byte) {
 	key := keyString(userPublicKey)
+	b.NotifyKey(key)
+}
+
+func (b *Bus) NotifyKey(key string) {
 	b.mu.RLock()
 	m := b.subs[key]
 	// Copy channels to avoid holding the lock while sending.

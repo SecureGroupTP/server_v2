@@ -112,7 +112,7 @@ func repoRoot(t testing.TB) string {
 func CleanupTables(t testing.TB, store Store) {
 	t.Helper()
 	_, err := store.DB().Exec(`
-	TRUNCATE ban_statuses, chat_invitations, chat_member_permissions, direct_rooms, chat_members, chat_room_states, chat_rooms, friends, friend_requests, key_packages, device_push_tokens, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE
+	TRUNCATE ban_statuses, chat_invitations, chat_member_permissions, direct_rooms, chat_members, chat_room_states, chat_rooms, friends, friend_requests, key_packages, device_push_tokens, outbox_segments, outbox, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE
 `)
 	if err != nil {
 		t.Fatalf("cleanup postgres tables: %v", err)
@@ -122,7 +122,7 @@ func CleanupTables(t testing.TB, store Store) {
 func AuthTablesOnlyCleanup(t testing.TB, store Store) {
 	t.Helper()
 	_, err := store.DB().Exec(`
-TRUNCATE ban_statuses, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE
+TRUNCATE ban_statuses, outbox_segments, outbox, user_events, event_subscriptions, auth_sessions, profiles RESTART IDENTITY CASCADE
 `)
 	if err != nil {
 		t.Fatalf("cleanup postgres auth tables: %v", err)

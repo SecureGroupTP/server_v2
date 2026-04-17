@@ -200,6 +200,9 @@ INSERT INTO user_events (
 	if err != nil {
 		return fmt.Errorf("insert user event: %w", err)
 	}
+	if err := r.appendOutbox(ctx, event); err != nil {
+		return err
+	}
 	return nil
 }
 

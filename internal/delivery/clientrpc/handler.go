@@ -18,6 +18,7 @@ import (
 
 	appauth "server_v2/internal/application/auth"
 	clientapi "server_v2/internal/application/clientapi"
+	appoutbox "server_v2/internal/application/outbox"
 	domainauth "server_v2/internal/domain/auth"
 	"server_v2/internal/domain/rpc"
 	"server_v2/internal/platform/eventbus"
@@ -37,6 +38,7 @@ type Handler struct {
 	logger           *slog.Logger
 	authService      *appauth.Service
 	clientService    *clientapi.Service
+	outboxService    *appoutbox.Service
 	httpConnSessions *httpConnectionSessions
 	bus              *eventbus.Bus
 }
@@ -44,6 +46,7 @@ type Handler struct {
 type sessionState struct {
 	SessionID        uuid.UUID
 	UserPublicKey    []byte
+	DeviceID         string
 	Authenticated    bool
 	ProfileCompleted bool
 	SubscriptionIDs  []uuid.UUID
@@ -52,6 +55,7 @@ type sessionState struct {
 type connectionSession struct {
 	mu    sync.Mutex
 	state sessionState
+	sent  map[uuid.UUID]time.Time
 }
 
 type httpConnectionSessions struct {
@@ -81,14 +85,17 @@ type unsubscribeFromEventsParams struct {
 }
 
 type acknowledgeEventParams struct {
-	EventID any `cbor:"eventId"`
+	EventID   any    `cbor:"eventId"`
+	DeviceID  string `cbor:"deviceId"`
+	SegmentID string `cbor:"segmentId"`
 }
 
-func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service, bus *eventbus.Bus) *Handler {
+func NewHandler(logger *slog.Logger, authService *appauth.Service, clientService *clientapi.Service, outboxService *appoutbox.Service, bus *eventbus.Bus) *Handler {
 	return &Handler{
 		logger:           logging.WithSource(logger, "server_v2/internal/delivery/clientrpc.Handler"),
 		authService:      authService,
 		clientService:    clientService,
+		outboxService:    outboxService,
 		httpConnSessions: newHTTPConnectionSessions(),
 		bus:              bus,
 	}
@@ -116,7 +123,7 @@ func (s *httpConnectionSessions) get(connectionID string) *connectionSession {
 		return scope
 	}
 
-	scope = &connectionSession{}
+	scope = &connectionSession{sent: make(map[uuid.UUID]time.Time)}
 	s.scopes[connectionID] = scope
 	return scope
 }
@@ -171,7 +178,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	scope := h.httpConnSessions.get(connectionID)
 	scope.mu.Lock()
-	responses, nextState, statusCode, requestCount := h.handleBatch(r.Context(), body, scope.state)
+	responses, nextState, statusCode, requestCount := h.handleBatch(r.Context(), body, scope.state, scope.sent)
 	scope.state = nextState
 	scope.mu.Unlock()
 	payload, err := cbor.Marshal(responses)
@@ -230,12 +237,13 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("websocket connection accepted", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 
 	state := sessionState{}
+	sentEvents := make(map[uuid.UUID]time.Time)
 	var stopPush func()
-	startPush := func(userPublicKey []byte) {
-		if stopPush != nil || h.bus == nil || len(userPublicKey) == 0 || h.authService == nil {
+	startPush := func(state sessionState) {
+		if stopPush != nil || h.bus == nil || state.DeviceID == "" || h.outboxService == nil {
 			return
 		}
-		notifyCh, unsubscribe := h.bus.Subscribe(userPublicKey)
+		notifyCh, unsubscribe := h.bus.SubscribeKey(state.DeviceID)
 		pushCtx, pushCancel := context.WithCancel(ctx)
 		var stopOnce sync.Once
 		stop := func() {
@@ -256,7 +264,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				default:
 				}
 
-				packets, err := h.pullEventPackets(pushCtx, userPublicKey)
+				packets, err := h.pullOutboxPackets(pushCtx, state.DeviceID, sentEvents)
 				if err != nil {
 					h.logger.Debug("websocket event push pull failed", "remote_addr", r.RemoteAddr, "error", err)
 					// If we can't pull events, wait for the next signal.
@@ -276,7 +284,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						cancel()
 						return
 					}
-					h.recordUserUsage(pushCtx, userPublicKey, 0, 0, bytesOut)
+					h.recordUserUsage(pushCtx, state.UserPublicKey, 0, 0, bytesOut)
 					// More events may already be queued; keep draining.
 					continue
 				}
@@ -306,12 +314,12 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state)
+		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state, sentEvents)
 		state = nextState
 
 		// Start async event push after the connection becomes authenticated.
-		if state.Authenticated {
-			startPush(state.UserPublicKey)
+		if state.Authenticated && h.outboxService == nil {
+			startPush(state)
 		}
 
 		bytesOut, err := writePackets(responses)
@@ -356,6 +364,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 		return written, nil
 	}
 	state := sessionState{}
+	sentEvents := make(map[uuid.UUID]time.Time)
 	batches := 0
 	h.logger.Info("tcp rpc stream started")
 	defer func() {
@@ -363,11 +372,11 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	}()
 
 	var stopPush func()
-	startPush := func(userPublicKey []byte) {
-		if stopPush != nil || h.bus == nil || len(userPublicKey) == 0 || h.authService == nil {
+	startPush := func(state sessionState) {
+		if stopPush != nil || h.bus == nil || state.DeviceID == "" || h.outboxService == nil {
 			return
 		}
-		notifyCh, unsubscribe := h.bus.Subscribe(userPublicKey)
+		notifyCh, unsubscribe := h.bus.SubscribeKey(state.DeviceID)
 		pushCtx, pushCancel := context.WithCancel(ctx)
 		var stopOnce sync.Once
 		stop := func() {
@@ -387,7 +396,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 				default:
 				}
 
-				packets, err := h.pullEventPackets(pushCtx, userPublicKey)
+				packets, err := h.pullOutboxPackets(pushCtx, state.DeviceID, sentEvents)
 				if err != nil {
 					h.logger.Debug("tcp event push pull failed", "error", err)
 					select {
@@ -406,7 +415,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 						cancel()
 						return
 					}
-					h.recordUserUsage(pushCtx, userPublicKey, 0, 0, bytesOut)
+					h.recordUserUsage(pushCtx, state.UserPublicKey, 0, 0, bytesOut)
 					continue
 				}
 
@@ -437,11 +446,11 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 			return fmt.Errorf("decode stream batch: %w", err)
 		}
 
-		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state)
+		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state, sentEvents)
 		state = nextState
 
-		if state.Authenticated {
-			startPush(state.UserPublicKey)
+		if state.Authenticated && h.outboxService == nil {
+			startPush(state)
 		}
 
 		bytesOut, err := writePackets(responses)
@@ -465,7 +474,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	}
 }
 
-func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionState) ([]rpc.ResponsePacket, sessionState, int, int) {
+func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionState, sentEvents map[uuid.UUID]time.Time) ([]rpc.ResponsePacket, sessionState, int, int) {
 	var packets []rpc.RequestPacket
 	if err := cbor.Unmarshal(raw, &packets); err != nil {
 		var packet rpc.RequestPacket
@@ -481,11 +490,11 @@ func (h *Handler) handleBatch(ctx context.Context, raw []byte, state sessionStat
 		packets = []rpc.RequestPacket{packet}
 	}
 
-	responses, nextState, statusCode := h.handlePackets(ctx, packets, state)
+	responses, nextState, statusCode := h.handlePackets(ctx, packets, state, sentEvents)
 	return responses, nextState, statusCode, len(packets)
 }
 
-func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket, state sessionState) ([]rpc.ResponsePacket, sessionState, int) {
+func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket, state sessionState, sentEvents map[uuid.UUID]time.Time) ([]rpc.ResponsePacket, sessionState, int) {
 	startedAt := time.Now()
 	responses := make([]rpc.ResponsePacket, 0, len(packets)+4)
 	statusCode := http.StatusOK
@@ -505,7 +514,35 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 		responses = append(responses, response)
 	}
 
-	if currentState.Authenticated {
+	if currentState.Authenticated && currentState.DeviceID != "" && h.outboxService != nil {
+		events, err := h.pullOutboxPackets(ctx, currentState.DeviceID, sentEvents)
+		if err != nil {
+			h.logger.Error("failed to pull device events", "session_id", currentState.SessionID.String(), "device_id", currentState.DeviceID, "error", err)
+			statusCode = maxStatus(statusCode, http.StatusInternalServerError)
+			return responses, currentState, statusCode
+		}
+		if len(events) > 0 {
+			responses = append(responses, events...)
+			h.logger.Debug("device events pulled", "session_id", currentState.SessionID.String(), "device_id", currentState.DeviceID, "event_count", len(events))
+		} else if h.authService != nil {
+			legacyEvents, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: currentState.UserPublicKey})
+			if err != nil {
+				h.logger.Error("failed to pull fallback user events", "session_id", currentState.SessionID.String(), "error", err)
+				statusCode = maxStatus(statusCode, http.StatusInternalServerError)
+				return responses, currentState, statusCode
+			}
+			for _, event := range legacyEvents {
+				eventID := event.EventID
+				responses = append(responses, rpc.ResponsePacket{
+					RequestID:        eventID,
+					ReplyToRequestID: event.ReplyToRequestID,
+					EventType:        event.EventType,
+					Parameters:       event.Payload,
+				})
+			}
+			h.logger.Debug("fallback user events pulled", "session_id", currentState.SessionID.String(), "event_count", len(legacyEvents))
+		}
+	} else if currentState.Authenticated && h.authService != nil {
 		events, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: currentState.UserPublicKey})
 		if err != nil {
 			h.logger.Error("failed to pull user events", "session_id", currentState.SessionID.String(), "error", err)
@@ -537,26 +574,49 @@ func (h *Handler) handlePackets(ctx context.Context, packets []rpc.RequestPacket
 	return responses, currentState, statusCode
 }
 
-func (h *Handler) pullEventPackets(ctx context.Context, userPublicKey []byte) ([]rpc.ResponsePacket, error) {
-	if h.authService == nil || len(userPublicKey) == 0 {
+func (h *Handler) pullOutboxPackets(ctx context.Context, deviceID string, sentEvents map[uuid.UUID]time.Time) ([]rpc.ResponsePacket, error) {
+	if h.outboxService == nil || deviceID == "" {
 		return nil, nil
 	}
-	events, err := h.authService.PullEvents(ctx, appauth.PullEventsInput{UserPublicKey: userPublicKey})
+	if sentEvents == nil {
+		sentEvents = make(map[uuid.UUID]time.Time)
+	}
+	now := time.Now()
+	for eventID, expiresAt := range sentEvents {
+		if !expiresAt.After(now) {
+			delete(sentEvents, eventID)
+		}
+	}
+	events, err := h.outboxService.ListInflight(ctx, deviceID, 128)
 	if err != nil {
 		return nil, err
+	}
+	if len(events) == 0 {
+		if _, err := h.outboxService.DispatchOnce(ctx); err != nil {
+			return nil, err
+		}
+		events, err = h.outboxService.ListInflight(ctx, deviceID, 128)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(events) == 0 {
 		return nil, nil
 	}
 	packets := make([]rpc.ResponsePacket, 0, len(events))
 	for _, event := range events {
+		if until, seen := sentEvents[event.EventID]; seen && until.After(now) {
+			continue
+		}
 		eventID := event.EventID
 		packets = append(packets, rpc.ResponsePacket{
-			RequestID:        eventID,
-			ReplyToRequestID: event.ReplyToRequestID,
-			EventType:        event.EventType,
-			Parameters:       event.Payload,
+			RequestID:  eventID,
+			EventType:  event.EventType,
+			Parameters: event.Payload,
 		})
+		if event.InflightUntil != nil {
+			sentEvents[event.EventID] = *event.InflightUntil
+		}
 	}
 	return packets, nil
 }
@@ -600,6 +660,7 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 		}
 		nextState.SessionID = result.SessionID
 		nextState.UserPublicKey = append([]byte(nil), params.UserPublicKey...)
+		nextState.DeviceID = params.DeviceID
 		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
 			RequestID:        uuid.New(),
@@ -629,6 +690,12 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 		nextState.UserPublicKey = append([]byte(nil), result.UserPublicKey...)
 		nextState.Authenticated = result.IsAuthenticated
 		if result.IsAuthenticated {
+			session, err := h.authService.LookupSession(ctx, params.SessionID)
+			if err != nil {
+				h.logRPCFailure(payload, err, startedAt)
+				return h.errorResponse(payload.RequestID, err), state, err
+			}
+			nextState.DeviceID = session.DeviceID
 			profileCompleted, err := h.profileCompleted(ctx, result.UserPublicKey)
 			if err != nil {
 				h.logRPCFailure(payload, err, startedAt)
@@ -705,12 +772,23 @@ func (h *Handler) handlePacket(ctx context.Context, packet rpc.RequestPacket, st
 			h.logRPCFailure(payload, domainauth.ErrInvalidEventID, startedAt)
 			return h.errorResponse(payload.RequestID, domainauth.ErrInvalidEventID), state, domainauth.ErrInvalidEventID
 		}
-		if _, err := h.authService.AcknowledgeEvent(ctx, appauth.AcknowledgeEventInput{
-			UserPublicKey: nextState.UserPublicKey,
-			EventID:       eventID,
-		}); err != nil {
-			h.logRPCFailure(payload, err, startedAt)
-			return h.errorResponse(payload.RequestID, err), state, err
+		deviceID := strings.TrimSpace(params.DeviceID)
+		if deviceID == "" {
+			deviceID = nextState.DeviceID
+		}
+		if h.outboxService != nil {
+			if err := h.outboxService.Acknowledge(ctx, eventID, deviceID, params.SegmentID); err != nil {
+				h.logRPCFailure(payload, err, startedAt)
+				return h.errorResponse(payload.RequestID, err), state, err
+			}
+		} else {
+			if _, err := h.authService.AcknowledgeEvent(ctx, appauth.AcknowledgeEventInput{
+				UserPublicKey: nextState.UserPublicKey,
+				EventID:       eventID,
+			}); err != nil {
+				h.logRPCFailure(payload, err, startedAt)
+				return h.errorResponse(payload.RequestID, err), state, err
+			}
 		}
 		h.logRPCSuccess(payload, nextState, startedAt)
 		return rpc.ResponsePacket{
@@ -833,6 +911,7 @@ func mapError(err error) (string, string) {
 		errors.Is(err, domainauth.ErrInvalidSessionID),
 		errors.Is(err, domainauth.ErrInvalidSignature),
 		errors.Is(err, domainauth.ErrInvalidDeviceID),
+		errors.Is(err, appoutbox.ErrInvalidDeviceID),
 		errors.Is(err, domainauth.ErrInvalidClientNonce),
 		errors.Is(err, domainauth.ErrInvalidEventID):
 		return "invalid_argument", err.Error()

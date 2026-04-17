@@ -15,6 +15,13 @@ type AppConfiguration struct {
 	EventRetention          time.Duration         `yaml:"event_retention"`
 	EventBatchSize          int                   `yaml:"event_batch_size"`
 	EventRedeliveryCooldown time.Duration         `yaml:"event_redelivery_cooldown"`
+	OutboxPollInterval      time.Duration         `yaml:"outbox_poll_interval"`
+	OutboxBatchSizeSegments int                   `yaml:"outbox_batch_size_segments"`
+	OutboxAckTimeout        time.Duration         `yaml:"outbox_ack_timeout"`
+	OutboxMaxAttempts       int                   `yaml:"outbox_max_attempts"`
+	OutboxJanitorInterval   time.Duration         `yaml:"outbox_janitor_interval"`
+	OutboxAckRetention      time.Duration         `yaml:"outbox_ack_retention"`
+	OutboxDropRetention     time.Duration         `yaml:"outbox_drop_retention"`
 	TLS                     AppTLSConfiguration   `yaml:"tls"`
 }
 
@@ -59,6 +66,27 @@ func (a AppConfiguration) Validate() error {
 	}
 	if a.EventRedeliveryCooldown < 0 {
 		return fmt.Errorf("app.event_redelivery_cooldown must be >= 0")
+	}
+	if a.OutboxPollInterval < 0 {
+		return fmt.Errorf("app.outbox_poll_interval must be >= 0")
+	}
+	if a.OutboxBatchSizeSegments < 0 {
+		return fmt.Errorf("app.outbox_batch_size_segments must be >= 0")
+	}
+	if a.OutboxAckTimeout < 0 {
+		return fmt.Errorf("app.outbox_ack_timeout must be >= 0")
+	}
+	if a.OutboxMaxAttempts < 0 {
+		return fmt.Errorf("app.outbox_max_attempts must be >= 0")
+	}
+	if a.OutboxJanitorInterval < 0 {
+		return fmt.Errorf("app.outbox_janitor_interval must be >= 0")
+	}
+	if a.OutboxAckRetention < 0 {
+		return fmt.Errorf("app.outbox_ack_retention must be >= 0")
+	}
+	if a.OutboxDropRetention < 0 {
+		return fmt.Errorf("app.outbox_drop_retention must be >= 0")
 	}
 
 	return nil

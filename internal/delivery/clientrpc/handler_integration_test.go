@@ -203,7 +203,7 @@ func newHandlerTestClient(t *testing.T) (*http.Client, string) {
 		t.Fatalf("new client service: %v", err)
 	}
 
-	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service, clientService, eventbus.New())
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), service, clientService, nil, eventbus.New())
 	mux := http.NewServeMux()
 	handler.Register(mux)
 

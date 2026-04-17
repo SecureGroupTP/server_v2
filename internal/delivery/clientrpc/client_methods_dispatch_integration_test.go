@@ -238,7 +238,7 @@ func TestDispatchClientMethodRoutesAllGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client service: %v", err)
 	}
-	handler := NewHandler(slog.Default(), nil, service, nil)
+	handler := NewHandler(slog.Default(), nil, service, nil, nil)
 	state := sessionState{SessionID: uuid.New(), UserPublicKey: key(1), Authenticated: true, ProfileCompleted: true}
 	params := map[string]any{
 		"userPublicKey":        key(2),

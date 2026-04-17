@@ -10,6 +10,7 @@ import (
 
 	appauth "server_v2/internal/application/auth"
 	clientapi "server_v2/internal/application/clientapi"
+	appoutbox "server_v2/internal/application/outbox"
 	"server_v2/internal/config"
 	"server_v2/internal/delivery/clientrpc"
 	"server_v2/internal/platform/clock"
@@ -63,6 +64,19 @@ func main() {
 	clientRepository := postgres.NewClientRepository(store.DB())
 	txManager := postgres.NewTxManager(store.DB())
 	bus := eventbus.New()
+	outboxService, err := appoutbox.NewService(appoutbox.Config{
+		PollInterval:      cfg.App.OutboxPollInterval,
+		BatchSizeSegments: cfg.App.OutboxBatchSizeSegments,
+		AckTimeout:        cfg.App.OutboxAckTimeout,
+		MaxAttempts:       cfg.App.OutboxMaxAttempts,
+		JanitorInterval:   cfg.App.OutboxJanitorInterval,
+		AckRetention:      cfg.App.OutboxAckRetention,
+		DropRetention:     cfg.App.OutboxDropRetention,
+	}, clock.Real{}, txManager, authRepository, bus)
+	if err != nil {
+		logger.Error("failed to initialize outbox service", "error", err)
+		os.Exit(1)
+	}
 	notifyingEvents := eventbus.NewNotifyingEventRepository(authRepository, bus)
 	authService, err := appauth.NewService(
 		appauth.Config{
@@ -106,7 +120,7 @@ func main() {
 	}
 	logger.Info("client api service initialized")
 
-	clientHandler := clientrpc.NewHandler(logger, authService, clientService, bus)
+	clientHandler := clientrpc.NewHandler(logger, authService, clientService, outboxService, bus)
 	httpConnectionBinder := appserver.NewHTTPConnectionBinder(clientHandler)
 	httpHandler := appserver.NewHandler(logger, cfg.App.OutputPorts, clientHandler)
 	runtime := appserver.NewRuntime(cfg.App, httpHandler, clientHandler, httpConnectionBinder, logger)
@@ -118,6 +132,16 @@ func main() {
 	go func() {
 		runErr := runtime.Run(ctx)
 		if runErr != nil {
+			runtimeErrCh <- runErr
+		}
+	}()
+	go func() {
+		if runErr := outboxService.RunDispatcher(ctx); runErr != nil && ctx.Err() == nil {
+			runtimeErrCh <- runErr
+		}
+	}()
+	go func() {
+		if runErr := outboxService.RunJanitor(ctx); runErr != nil && ctx.Err() == nil {
 			runtimeErrCh <- runErr
 		}
 	}()

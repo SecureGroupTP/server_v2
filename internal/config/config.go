@@ -95,4 +95,46 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.App.EventRedeliveryCooldown = duration
 		}
 	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_POLL_INTERVAL")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.OutboxPollInterval = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_BATCH_SIZE_SEGMENTS")); value != "" {
+		if size, err := strconv.Atoi(value); err == nil {
+			cfg.App.OutboxBatchSizeSegments = size
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_ACK_TIMEOUT")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.OutboxAckTimeout = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_MAX_ATTEMPTS")); value != "" {
+		if size, err := strconv.Atoi(value); err == nil {
+			cfg.App.OutboxMaxAttempts = size
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_JANITOR_INTERVAL")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.OutboxJanitorInterval = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_ACK_RETENTION")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.OutboxAckRetention = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_DROP_RETENTION")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.App.OutboxDropRetention = duration
+		}
+	}
 }

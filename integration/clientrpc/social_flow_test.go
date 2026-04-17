@@ -152,7 +152,7 @@ func newTestServer(t *testing.T) *testServer {
 	logs := &testLogSink{}
 	logger := logging.WithSource(logging.NewLogger(logs, slog.LevelDebug), "integration/clientrpc.social_flow")
 	bus := eventbus.New()
-	clientHandler := clientrpc.NewHandler(logger, authService, clientService, bus)
+	clientHandler := clientrpc.NewHandler(logger, authService, clientService, nil, bus)
 	httpBinder := appserver.NewHTTPConnectionBinder(clientHandler)
 	httpHandler := appserver.NewHandler(logger, ports, clientHandler)
 	cfg := config.AppConfiguration{
