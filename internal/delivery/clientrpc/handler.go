@@ -238,6 +238,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	state := sessionState{}
 	sentEvents := make(map[uuid.UUID]time.Time)
+	var sentEventsMu sync.Mutex
 	var stopPush func()
 	startPush := func(state sessionState) {
 		if stopPush != nil || h.bus == nil || state.DeviceID == "" || h.outboxService == nil {
@@ -264,7 +265,9 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				default:
 				}
 
+				sentEventsMu.Lock()
 				packets, err := h.pullOutboxPackets(pushCtx, state.DeviceID, sentEvents)
+				sentEventsMu.Unlock()
 				if err != nil {
 					h.logger.Debug("websocket event push pull failed", "remote_addr", r.RemoteAddr, "error", err)
 					// If we can't pull events, wait for the next signal.
@@ -314,11 +317,13 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		sentEventsMu.Lock()
 		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state, sentEvents)
+		sentEventsMu.Unlock()
 		state = nextState
 
 		// Start async event push after the connection becomes authenticated.
-		if state.Authenticated && h.outboxService == nil {
+		if state.Authenticated && h.outboxService != nil {
 			startPush(state)
 		}
 
@@ -365,6 +370,7 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 	}
 	state := sessionState{}
 	sentEvents := make(map[uuid.UUID]time.Time)
+	var sentEventsMu sync.Mutex
 	batches := 0
 	h.logger.Info("tcp rpc stream started")
 	defer func() {
@@ -396,7 +402,9 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 				default:
 				}
 
+				sentEventsMu.Lock()
 				packets, err := h.pullOutboxPackets(pushCtx, state.DeviceID, sentEvents)
+				sentEventsMu.Unlock()
 				if err != nil {
 					h.logger.Debug("tcp event push pull failed", "error", err)
 					select {
@@ -446,10 +454,12 @@ func (h *Handler) HandleStream(ctx context.Context, rw io.ReadWriter) error {
 			return fmt.Errorf("decode stream batch: %w", err)
 		}
 
+		sentEventsMu.Lock()
 		responses, nextState, _, requestCount := h.handleBatch(ctx, payload, state, sentEvents)
+		sentEventsMu.Unlock()
 		state = nextState
 
-		if state.Authenticated && h.outboxService == nil {
+		if state.Authenticated && h.outboxService != nil {
 			startPush(state)
 		}
 
