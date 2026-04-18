@@ -220,6 +220,13 @@ func (s *Service) UploadKeyPackages(ctx context.Context, sessionID uuid.UUID, us
 		if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
 			return nil, err
 		}
+		// Any stored direct-room Welcome intended for this user is now potentially
+		// stale because key packages are rotated per-device. Prefer "not_found" so
+		// the inviter can re-issue a fresh Welcome instead of clients looping on
+		// an un-joinable recovery Welcome.
+		if err := s.store.DeleteRoomWelcomesByTargetUser(ctx, user); err != nil {
+			return nil, err
+		}
 	}
 	recordedCount, err := s.store.InsertKeyPackages(ctx, records)
 	if err != nil {
@@ -239,7 +246,6 @@ func (s *Service) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte)
 			"userPublicKey":   record.UserPublicKey,
 			"deviceId":        record.DeviceID,
 			"keyPackageBytes": record.KeyPackageBytes,
-			"expiresAt":       record.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return map[string]any{"items": items}, nil
@@ -263,7 +269,7 @@ func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID,
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, targetDeviceID string, welcomeBytes []byte) (map[string]any, error) {
+func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
 	now := s.clock.Now()
 	var roomID uuid.UUID
 	var shouldStore bool
@@ -280,39 +286,23 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID 
 		roomID = directRoomID
 		shouldStore = directFound
 	}
-	payload := map[string]any{
-		"targetUserPublicKey": targetUserPublicKey,
-		"senderPublicKey":     user,
-		"targetDeviceId":      targetDeviceID,
-		"welcomeBytes":        welcomeBytes,
-	}
-	// Direct rooms need the room id so clients can re-fetch by roomId after reconnect.
-	if shouldStore && roomID != uuid.Nil {
-		payload["roomId"] = roomID.String()
-	}
-
-	if shouldStore && roomID != uuid.Nil {
-		record := ChatRoomWelcomeRecord{
+	if shouldStore {
+		if err := s.store.UpsertRoomWelcome(ctx, ChatRoomWelcomeRecord{
 			RoomID:              roomID,
 			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
-			TargetDeviceID:      targetDeviceID,
 			SenderPublicKey:     append([]byte(nil), user...),
 			WelcomeBytes:        append([]byte(nil), welcomeBytes...),
 			CreatedAt:           now,
 			UpdatedAt:           now,
-		}
-		if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
-			if err := s.store.UpsertRoomWelcome(txCtx, user, record); err != nil {
-				return err
-			}
-			return s.appendEvent(txCtx, targetUserPublicKey, "mlsWelcomeReceived", payload)
 		}); err != nil {
 			return nil, err
 		}
-	} else {
-		if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", payload); err != nil {
-			return nil, err
-		}
+	}
+	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", map[string]any{
+		"targetUserPublicKey": targetUserPublicKey,
+		"welcomeBytes":        welcomeBytes,
+	}); err != nil {
+		return nil, err
 	}
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
@@ -390,7 +380,7 @@ func (s *Service) SendExternalCommit(ctx context.Context, user []byte, roomID uu
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) FetchWelcome(ctx context.Context, user []byte, deviceID string, roomID uuid.UUID) (map[string]any, error) {
+func (s *Service) FetchWelcome(ctx context.Context, user []byte, roomID uuid.UUID) (map[string]any, error) {
 	direct, err := s.store.IsDirectRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -398,7 +388,7 @@ func (s *Service) FetchWelcome(ctx context.Context, user []byte, deviceID string
 	if !direct {
 		return nil, ErrForbidden
 	}
-	record, err := s.store.GetRoomWelcome(ctx, roomID, user, deviceID)
+	record, err := s.store.GetRoomWelcome(ctx, roomID, user)
 	if err != nil {
 		return nil, err
 	}

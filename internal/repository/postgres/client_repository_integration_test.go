@@ -161,18 +161,17 @@ func TestClientRepositoryMlsArtifactsAndInvitationContract(t *testing.T) {
 		t.Fatalf("expected direct room, direct=%v err=%v", direct, err)
 	}
 
-	if err := repo.UpsertRoomWelcome(context.Background(), user1, clientapi.ChatRoomWelcomeRecord{
+	if err := repo.UpsertRoomWelcome(context.Background(), clientapi.ChatRoomWelcomeRecord{
 		RoomID:              roomID,
 		TargetUserPublicKey: user2,
-		TargetDeviceID:      "flutter-test",
 		SenderPublicKey:     user1,
 		WelcomeBytes:        []byte("welcome"),
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}); err != nil {
-		t.Fatalf("upsert welcome: %v", err)
+		t.Fatalf("upsert room welcome: %v", err)
 	}
-	welcome, err := repo.GetRoomWelcome(context.Background(), roomID, user2, "flutter-test")
+	welcome, err := repo.GetRoomWelcome(context.Background(), roomID, user2)
 	if err != nil {
 		t.Fatalf("get room welcome: %v", err)
 	}

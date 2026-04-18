@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,26 +15,6 @@ import (
 
 type ClientRepository struct {
 	db *sql.DB
-}
-
-func decodeAnyBytes(value any) ([]byte, error) {
-	switch v := value.(type) {
-	case nil:
-		return nil, nil
-	case []byte:
-		return append([]byte(nil), v...), nil
-	case string:
-		if v == "" {
-			return nil, nil
-		}
-		out, err := base64.StdEncoding.DecodeString(v)
-		if err != nil {
-			return nil, err
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("unexpected bytes value type %T", value)
-	}
 }
 
 func NewClientRepository(db *sql.DB) *ClientRepository {
@@ -214,53 +191,7 @@ func (r *ClientRepository) InsertKeyPackages(ctx context.Context, keyPackages []
 }
 
 func (r *ClientRepository) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte, now time.Time) ([]clientapi.KeyPackageRecord, error) {
-	// Fetch a single "best" key package per requested user.
-	//
-	// Rationale:
-	// - Direct rooms store only one Welcome per (room_id, target_user_public_key),
-	//   so inviting the wrong device_id (stale / old install) makes the stored
-	//   welcome unusable for the currently active device.
-	// - In practice, most flows assume one active MLS device per account.
-	//
-	// Selection heuristic (per user):
-	// 1) Prefer device_id with an active authenticated auth session.
-	// 2) Else prefer device_id with an enabled push token.
-	// 3) Else fall back to the device_id that uploaded the most recent key package.
-	// Within the chosen device_id, prefer non-last-resort packages and the newest.
-	rows, err := r.dbtx(ctx).QueryContext(ctx, `
-SELECT DISTINCT ON (kp.user_public_key)
-  kp.id, kp.user_public_key, kp.device_id, kp.key_package_bytes, kp.is_last_resort, kp.created_at, kp.expires_at
-FROM key_packages kp
-LEFT JOIN LATERAL (
-  SELECT s.device_id
-  FROM auth_sessions s
-  WHERE s.user_public_key = kp.user_public_key
-    AND s.is_authenticated = TRUE
-    AND s.expires_at > $2
-  ORDER BY s.updated_at DESC
-  LIMIT 1
-) active_session ON TRUE
-LEFT JOIN LATERAL (
-  SELECT t.device_id
-  FROM device_push_tokens t
-  WHERE t.user_public_key = kp.user_public_key
-    AND t.is_enabled = TRUE
-  ORDER BY t.updated_at DESC
-  LIMIT 1
-) active_push ON TRUE
-WHERE kp.user_public_key = ANY($1)
-  AND kp.expires_at > $2
-ORDER BY
-  kp.user_public_key,
-  CASE
-    WHEN active_session.device_id IS NOT NULL AND kp.device_id = active_session.device_id THEN 0
-    WHEN active_push.device_id IS NOT NULL AND kp.device_id = active_push.device_id THEN 1
-    ELSE 2
-  END,
-  kp.is_last_resort ASC,
-  kp.created_at DESC,
-  kp.device_id ASC
-`, pqByteaArray(userPublicKeys), now)
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT DISTINCT ON (user_public_key, device_id) id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at FROM key_packages WHERE user_public_key = ANY($1) AND expires_at > $2 ORDER BY user_public_key, device_id, is_last_resort ASC, created_at DESC`, pqByteaArray(userPublicKeys), now)
 	if err != nil {
 		return nil, err
 	}
@@ -364,50 +295,17 @@ SELECT EXISTS (
 	return exists, nil
 }
 
-func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, userPublicKey []byte, welcome clientapi.ChatRoomWelcomeRecord) error {
-	if _, err := r.ensureMember(ctx, welcome.RoomID, userPublicKey); err != nil {
-		return err
-	}
-	if _, err := r.ensureMember(ctx, welcome.RoomID, welcome.TargetUserPublicKey); err != nil {
-		return err
-	}
-
-	direct, err := r.IsDirectRoom(ctx, welcome.RoomID)
-	if err != nil {
-		return err
-	}
-	if !direct {
-		return clientapi.ErrForbidden
-	}
-
-	var activeMembers int64
-	if err := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, welcome.RoomID).Scan(&activeMembers); err != nil {
-		return err
-	}
-	if activeMembers != 2 {
-		return clientapi.ErrForbidden
-	}
-
-	_, err = r.dbtx(ctx).ExecContext(ctx, `
-INSERT INTO chat_room_welcomes (
-  room_id,
-  target_user_public_key,
-  target_device_id,
-  sender_public_key,
-  welcome_bytes,
-  created_at,
-  updated_at
-) VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()), COALESCE($7, NOW()))
-ON CONFLICT (room_id, target_user_public_key, target_device_id)
-DO UPDATE SET
-  sender_public_key = EXCLUDED.sender_public_key,
-  welcome_bytes = EXCLUDED.welcome_bytes,
-  updated_at = EXCLUDED.updated_at
-`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.TargetDeviceID, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
+func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, welcome clientapi.ChatRoomWelcomeRecord) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_room_welcomes (room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (room_id, target_user_public_key)
+DO UPDATE SET sender_public_key = EXCLUDED.sender_public_key, welcome_bytes = EXCLUDED.welcome_bytes, updated_at = EXCLUDED.updated_at
+`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
 	return err
 }
 
-func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte, targetDeviceID string) (clientapi.ChatRoomWelcomeRecord, error) {
+func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
 	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
@@ -428,119 +326,27 @@ func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID,
 		return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrForbidden
 	}
 
-	// Primary: durable welcome storage.
-	{
-		normalizedDeviceID := strings.TrimSpace(targetDeviceID)
-		row := r.dbtx(ctx).QueryRowContext(ctx, `
-SELECT target_device_id, sender_public_key, welcome_bytes, created_at, updated_at
-FROM chat_room_welcomes
-WHERE room_id = $1 AND target_user_public_key = $2 AND target_device_id = $3
-`, roomID, targetUserPublicKey, normalizedDeviceID)
-		var storedDeviceID string
-		var senderPublicKey []byte
-		var welcomeBytes []byte
-		var createdAt time.Time
-		var updatedAt time.Time
-		switch err := row.Scan(&storedDeviceID, &senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err {
-		case nil:
-			return clientapi.ChatRoomWelcomeRecord{
-				RoomID:              roomID,
-				TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
-				TargetDeviceID:      storedDeviceID,
-				SenderPublicKey:     senderPublicKey,
-				WelcomeBytes:        welcomeBytes,
-				CreatedAt:           createdAt,
-				UpdatedAt:           updatedAt,
-			}, nil
-		case sql.ErrNoRows:
-			// Backwards compatibility: some servers stored direct welcomes without
-			// device_id; try the legacy empty device id.
-			row2 := r.dbtx(ctx).QueryRowContext(ctx, `
-SELECT target_device_id, sender_public_key, welcome_bytes, created_at, updated_at
-FROM chat_room_welcomes
-WHERE room_id = $1 AND target_user_public_key = $2 AND target_device_id = ''
-`, roomID, targetUserPublicKey)
-			switch err2 := row2.Scan(&storedDeviceID, &senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err2 {
-			case nil:
-				return clientapi.ChatRoomWelcomeRecord{
-					RoomID:              roomID,
-					TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
-					TargetDeviceID:      storedDeviceID,
-					SenderPublicKey:     senderPublicKey,
-					WelcomeBytes:        welcomeBytes,
-					CreatedAt:           createdAt,
-					UpdatedAt:           updatedAt,
-				}, nil
-			case sql.ErrNoRows:
-				// fall through to legacy outbox-backed storage below
-			default:
-				return clientapi.ChatRoomWelcomeRecord{}, err2
-			}
-		default:
-			return clientapi.ChatRoomWelcomeRecord{}, err
-		}
-	}
-
-	// Legacy fallback: some older builds stored welcomes only as user events
-	// ("outbox"). Keep reading them for compatibility and backfill into the
-	// durable table when found.
 	row := r.dbtx(ctx).QueryRowContext(ctx, `
-SELECT payload, created_at
-FROM user_events
-WHERE user_public_key = $1
-  AND event_type = 'mlsWelcomeReceived'
-  AND payload->>'roomId' = $2
-  AND available_at <= NOW()
-  AND expires_at > NOW()
-ORDER BY created_at DESC
-LIMIT 1
-`, targetUserPublicKey, roomID.String())
-	var rawPayload []byte
-	var createdAt time.Time
-	if err := row.Scan(&rawPayload, &createdAt); err != nil {
+SELECT room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at
+FROM chat_room_welcomes
+WHERE room_id = $1 AND target_user_public_key = $2
+`, roomID, targetUserPublicKey)
+	var out clientapi.ChatRoomWelcomeRecord
+	if err := row.Scan(&out.RoomID, &out.TargetUserPublicKey, &out.SenderPublicKey, &out.WelcomeBytes, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrNotFound
 		}
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(rawPayload, &decoded); err != nil {
-		return clientapi.ChatRoomWelcomeRecord{}, err
-	}
-	welcomeBytes, err := decodeAnyBytes(decoded["welcomeBytes"])
-	if err != nil {
-		return clientapi.ChatRoomWelcomeRecord{}, err
-	}
-	senderPublicKey, _ := decodeAnyBytes(decoded["senderPublicKey"])
+	return out, nil
+}
 
-	// Best-effort backfill into durable storage to prevent future `not_found`
-	// if user event retention/ACK semantics differ across server builds.
-	_, _ = r.dbtx(ctx).ExecContext(ctx, `
-INSERT INTO chat_room_welcomes (
-  room_id,
-  target_user_public_key,
-  target_device_id,
-  sender_public_key,
-  welcome_bytes,
-  created_at,
-  updated_at
-) VALUES ($1, $2, '', $3, $4, $5, $5)
-ON CONFLICT (room_id, target_user_public_key, target_device_id)
-DO UPDATE SET
-  sender_public_key = EXCLUDED.sender_public_key,
-  welcome_bytes = EXCLUDED.welcome_bytes,
-  updated_at = EXCLUDED.updated_at
-`, roomID, targetUserPublicKey, senderPublicKey, welcomeBytes, createdAt)
-
-	return clientapi.ChatRoomWelcomeRecord{
-		RoomID:              roomID,
-		TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
-		TargetDeviceID:      "",
-		SenderPublicKey:     senderPublicKey,
-		WelcomeBytes:        welcomeBytes,
-		CreatedAt:           createdAt,
-		UpdatedAt:           createdAt,
-	}, nil
+func (r *ClientRepository) DeleteRoomWelcomesByTargetUser(ctx context.Context, targetUserPublicKey []byte) error {
+	_, err := r.dbtx(ctx).ExecContext(ctx, `
+DELETE FROM chat_room_welcomes
+WHERE target_user_public_key = $1
+`, targetUserPublicKey)
+	return err
 }
 
 func (r *ClientRepository) AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error) {
