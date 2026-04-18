@@ -213,7 +213,53 @@ func (r *ClientRepository) InsertKeyPackages(ctx context.Context, keyPackages []
 }
 
 func (r *ClientRepository) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte, now time.Time) ([]clientapi.KeyPackageRecord, error) {
-	rows, err := r.dbtx(ctx).QueryContext(ctx, `SELECT DISTINCT ON (user_public_key, device_id) id, user_public_key, device_id, key_package_bytes, is_last_resort, created_at, expires_at FROM key_packages WHERE user_public_key = ANY($1) AND expires_at > $2 ORDER BY user_public_key, device_id, is_last_resort ASC, created_at DESC`, pqByteaArray(userPublicKeys), now)
+	// Fetch a single "best" key package per requested user.
+	//
+	// Rationale:
+	// - Direct rooms store only one Welcome per (room_id, target_user_public_key),
+	//   so inviting the wrong device_id (stale / old install) makes the stored
+	//   welcome unusable for the currently active device.
+	// - In practice, most flows assume one active MLS device per account.
+	//
+	// Selection heuristic (per user):
+	// 1) Prefer device_id with an active authenticated auth session.
+	// 2) Else prefer device_id with an enabled push token.
+	// 3) Else fall back to the device_id that uploaded the most recent key package.
+	// Within the chosen device_id, prefer non-last-resort packages and the newest.
+	rows, err := r.dbtx(ctx).QueryContext(ctx, `
+SELECT DISTINCT ON (kp.user_public_key)
+  kp.id, kp.user_public_key, kp.device_id, kp.key_package_bytes, kp.is_last_resort, kp.created_at, kp.expires_at
+FROM key_packages kp
+LEFT JOIN LATERAL (
+  SELECT s.device_id
+  FROM auth_sessions s
+  WHERE s.user_public_key = kp.user_public_key
+    AND s.is_authenticated = TRUE
+    AND s.expires_at > $2
+  ORDER BY s.updated_at DESC
+  LIMIT 1
+) active_session ON TRUE
+LEFT JOIN LATERAL (
+  SELECT t.device_id
+  FROM device_push_tokens t
+  WHERE t.user_public_key = kp.user_public_key
+    AND t.is_enabled = TRUE
+  ORDER BY t.updated_at DESC
+  LIMIT 1
+) active_push ON TRUE
+WHERE kp.user_public_key = ANY($1)
+  AND kp.expires_at > $2
+ORDER BY
+  kp.user_public_key,
+  CASE
+    WHEN active_session.device_id IS NOT NULL AND kp.device_id = active_session.device_id THEN 0
+    WHEN active_push.device_id IS NOT NULL AND kp.device_id = active_push.device_id THEN 1
+    ELSE 2
+  END,
+  kp.is_last_resort ASC,
+  kp.created_at DESC,
+  kp.device_id ASC
+`, pqByteaArray(userPublicKeys), now)
 	if err != nil {
 		return nil, err
 	}

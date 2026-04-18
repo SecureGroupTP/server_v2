@@ -239,6 +239,7 @@ func (s *Service) FetchKeyPackages(ctx context.Context, userPublicKeys [][]byte)
 			"userPublicKey":   record.UserPublicKey,
 			"deviceId":        record.DeviceID,
 			"keyPackageBytes": record.KeyPackageBytes,
+			"expiresAt":       record.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return map[string]any{"items": items}, nil
