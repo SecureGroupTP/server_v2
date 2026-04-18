@@ -100,7 +100,7 @@ func (s *dispatchStore) IsDirectRoom(context.Context, uuid.UUID) (bool, error) {
 func (s *dispatchStore) UpsertRoomWelcome(context.Context, []byte, clientapi.ChatRoomWelcomeRecord) error {
 	return nil
 }
-func (s *dispatchStore) GetRoomWelcome(context.Context, uuid.UUID, []byte) (clientapi.ChatRoomWelcomeRecord, error) {
+func (s *dispatchStore) GetRoomWelcome(context.Context, uuid.UUID, []byte, string) (clientapi.ChatRoomWelcomeRecord, error) {
 	return clientapi.ChatRoomWelcomeRecord{WelcomeBytes: []byte("welcome")}, nil
 }
 func (s *dispatchStore) DeleteRoomWelcomesByTargetUser(context.Context, []byte) error { return nil }

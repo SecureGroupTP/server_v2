@@ -119,7 +119,7 @@ func (s *storeMock) UpsertRoomWelcome(_ context.Context, _ []byte, welcome ChatR
 	s.welcome = welcome
 	return nil
 }
-func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
+func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte, string) (ChatRoomWelcomeRecord, error) {
 	return s.welcome, nil
 }
 func (s *storeMock) AreFriends(context.Context, []byte, []byte) (bool, error) {
@@ -551,7 +551,7 @@ func TestServiceSendWelcomeAppendsDirectEvent(t *testing.T) {
 	}
 
 	welcome := []byte("welcome-1")
-	response, err := service.SendWelcome(context.Background(), bytes32(1), nil, target, welcome)
+	response, err := service.SendWelcome(context.Background(), bytes32(1), nil, target, "flutter-test", welcome)
 	if err != nil {
 		t.Fatalf("send welcome: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestServiceSendWelcomeStoresDirectWelcomeWhenRoomIDProvided(t *testing.T) {
 	}
 
 	welcome := []byte("direct-welcome")
-	response, err := service.SendWelcome(context.Background(), sender, &roomID, target, welcome)
+	response, err := service.SendWelcome(context.Background(), sender, &roomID, target, "flutter-test", welcome)
 	if err != nil {
 		t.Fatalf("send welcome: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestServiceFetchWelcomeReturnsStoredDirectWelcome(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
-	response, err := service.FetchWelcome(context.Background(), target, roomID)
+	response, err := service.FetchWelcome(context.Background(), target, "flutter-test", roomID)
 	if err != nil {
 		t.Fatalf("fetch welcome: %v", err)
 	}
@@ -655,7 +655,7 @@ func TestServiceFetchWelcomeRejectsNonDirectRoom(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
-	if _, err := service.FetchWelcome(context.Background(), bytes32(2), roomID); !errors.Is(err, ErrForbidden) {
+	if _, err := service.FetchWelcome(context.Background(), bytes32(2), "flutter-test", roomID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected forbidden for non-direct welcome fetch, got %v", err)
 	}
 }

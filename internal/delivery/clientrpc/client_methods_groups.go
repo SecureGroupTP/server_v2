@@ -34,7 +34,7 @@ func (h *Handler) handleDeviceAndMLSMethods(ctx context.Context, rpcCall string,
 	case "sendCommit":
 		return h.clientService.SendCommit(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "commitBytes"))
 	case "sendWelcome":
-		return h.clientService.SendWelcome(ctx, state.UserPublicKey, optionalUUIDPtr(params, "roomId"), mustBytes(params, "targetUserPublicKey"), mustBytes(params, "welcomeBytes"))
+		return h.clientService.SendWelcome(ctx, state.UserPublicKey, optionalUUIDPtr(params, "roomId"), mustBytes(params, "targetUserPublicKey"), optionalString(params, "targetDeviceId"), mustBytes(params, "welcomeBytes"))
 	case "uploadGroupInfo":
 		return h.clientService.UploadGroupInfo(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "groupInfoBytes"))
 	case "fetchGroupInfo":
@@ -42,7 +42,7 @@ func (h *Handler) handleDeviceAndMLSMethods(ctx context.Context, rpcCall string,
 	case "sendExternalCommit":
 		return h.clientService.SendExternalCommit(ctx, state.UserPublicKey, mustUUID(params, "roomId"), mustBytes(params, "commitBytes"))
 	case "fetchWelcome":
-		return h.clientService.FetchWelcome(ctx, state.UserPublicKey, mustUUID(params, "roomId"))
+		return h.clientService.FetchWelcome(ctx, state.UserPublicKey, state.DeviceID, mustUUID(params, "roomId"))
 	default:
 		return nil, nil
 	}

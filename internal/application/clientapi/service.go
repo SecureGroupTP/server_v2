@@ -263,7 +263,7 @@ func (s *Service) SendCommit(ctx context.Context, user []byte, roomID uuid.UUID,
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, welcomeBytes []byte) (map[string]any, error) {
+func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID *uuid.UUID, targetUserPublicKey []byte, targetDeviceID string, welcomeBytes []byte) (map[string]any, error) {
 	now := s.clock.Now()
 	var roomID uuid.UUID
 	var shouldStore bool
@@ -283,6 +283,7 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID 
 	payload := map[string]any{
 		"targetUserPublicKey": targetUserPublicKey,
 		"senderPublicKey":     user,
+		"targetDeviceId":      targetDeviceID,
 		"welcomeBytes":        welcomeBytes,
 	}
 	// Direct rooms need the room id so clients can re-fetch by roomId after reconnect.
@@ -294,6 +295,7 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID 
 		record := ChatRoomWelcomeRecord{
 			RoomID:              roomID,
 			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+			TargetDeviceID:      targetDeviceID,
 			SenderPublicKey:     append([]byte(nil), user...),
 			WelcomeBytes:        append([]byte(nil), welcomeBytes...),
 			CreatedAt:           now,
@@ -388,7 +390,7 @@ func (s *Service) SendExternalCommit(ctx context.Context, user []byte, roomID uu
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }
 
-func (s *Service) FetchWelcome(ctx context.Context, user []byte, roomID uuid.UUID) (map[string]any, error) {
+func (s *Service) FetchWelcome(ctx context.Context, user []byte, deviceID string, roomID uuid.UUID) (map[string]any, error) {
 	direct, err := s.store.IsDirectRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -396,7 +398,7 @@ func (s *Service) FetchWelcome(ctx context.Context, user []byte, roomID uuid.UUI
 	if !direct {
 		return nil, ErrForbidden
 	}
-	record, err := s.store.GetRoomWelcome(ctx, roomID, user)
+	record, err := s.store.GetRoomWelcome(ctx, roomID, user, deviceID)
 	if err != nil {
 		return nil, err
 	}

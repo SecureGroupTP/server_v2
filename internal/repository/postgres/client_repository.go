@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -391,21 +392,22 @@ func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, userPublicKey 
 INSERT INTO chat_room_welcomes (
   room_id,
   target_user_public_key,
+  target_device_id,
   sender_public_key,
   welcome_bytes,
   created_at,
   updated_at
-) VALUES ($1, $2, $3, $4, COALESCE($5, NOW()), COALESCE($6, NOW()))
-ON CONFLICT (room_id, target_user_public_key)
+) VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()), COALESCE($7, NOW()))
+ON CONFLICT (room_id, target_user_public_key, target_device_id)
 DO UPDATE SET
   sender_public_key = EXCLUDED.sender_public_key,
   welcome_bytes = EXCLUDED.welcome_bytes,
   updated_at = EXCLUDED.updated_at
-`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
+`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.TargetDeviceID, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
 	return err
 }
 
-func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
+func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte, targetDeviceID string) (clientapi.ChatRoomWelcomeRecord, error) {
 	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
@@ -428,27 +430,52 @@ func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID,
 
 	// Primary: durable welcome storage.
 	{
+		normalizedDeviceID := strings.TrimSpace(targetDeviceID)
 		row := r.dbtx(ctx).QueryRowContext(ctx, `
-SELECT sender_public_key, welcome_bytes, created_at, updated_at
+SELECT target_device_id, sender_public_key, welcome_bytes, created_at, updated_at
 FROM chat_room_welcomes
-WHERE room_id = $1 AND target_user_public_key = $2
-`, roomID, targetUserPublicKey)
+WHERE room_id = $1 AND target_user_public_key = $2 AND target_device_id = $3
+`, roomID, targetUserPublicKey, normalizedDeviceID)
+		var storedDeviceID string
 		var senderPublicKey []byte
 		var welcomeBytes []byte
 		var createdAt time.Time
 		var updatedAt time.Time
-		switch err := row.Scan(&senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err {
+		switch err := row.Scan(&storedDeviceID, &senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err {
 		case nil:
 			return clientapi.ChatRoomWelcomeRecord{
 				RoomID:              roomID,
 				TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+				TargetDeviceID:      storedDeviceID,
 				SenderPublicKey:     senderPublicKey,
 				WelcomeBytes:        welcomeBytes,
 				CreatedAt:           createdAt,
 				UpdatedAt:           updatedAt,
 			}, nil
 		case sql.ErrNoRows:
-			// fall through to legacy outbox-backed storage below
+			// Backwards compatibility: some servers stored direct welcomes without
+			// device_id; try the legacy empty device id.
+			row2 := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT target_device_id, sender_public_key, welcome_bytes, created_at, updated_at
+FROM chat_room_welcomes
+WHERE room_id = $1 AND target_user_public_key = $2 AND target_device_id = ''
+`, roomID, targetUserPublicKey)
+			switch err2 := row2.Scan(&storedDeviceID, &senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err2 {
+			case nil:
+				return clientapi.ChatRoomWelcomeRecord{
+					RoomID:              roomID,
+					TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+					TargetDeviceID:      storedDeviceID,
+					SenderPublicKey:     senderPublicKey,
+					WelcomeBytes:        welcomeBytes,
+					CreatedAt:           createdAt,
+					UpdatedAt:           updatedAt,
+				}, nil
+			case sql.ErrNoRows:
+				// fall through to legacy outbox-backed storage below
+			default:
+				return clientapi.ChatRoomWelcomeRecord{}, err2
+			}
 		default:
 			return clientapi.ChatRoomWelcomeRecord{}, err
 		}
@@ -492,12 +519,13 @@ LIMIT 1
 INSERT INTO chat_room_welcomes (
   room_id,
   target_user_public_key,
+  target_device_id,
   sender_public_key,
   welcome_bytes,
   created_at,
   updated_at
-) VALUES ($1, $2, $3, $4, $5, $5)
-ON CONFLICT (room_id, target_user_public_key)
+) VALUES ($1, $2, '', $3, $4, $5, $5)
+ON CONFLICT (room_id, target_user_public_key, target_device_id)
 DO UPDATE SET
   sender_public_key = EXCLUDED.sender_public_key,
   welcome_bytes = EXCLUDED.welcome_bytes,
@@ -507,6 +535,7 @@ DO UPDATE SET
 	return clientapi.ChatRoomWelcomeRecord{
 		RoomID:              roomID,
 		TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+		TargetDeviceID:      "",
 		SenderPublicKey:     senderPublicKey,
 		WelcomeBytes:        welcomeBytes,
 		CreatedAt:           createdAt,
