@@ -317,6 +317,48 @@ SELECT EXISTS (
 	return exists, nil
 }
 
+func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, userPublicKey []byte, welcome clientapi.ChatRoomWelcomeRecord) error {
+	if _, err := r.ensureMember(ctx, welcome.RoomID, userPublicKey); err != nil {
+		return err
+	}
+	if _, err := r.ensureMember(ctx, welcome.RoomID, welcome.TargetUserPublicKey); err != nil {
+		return err
+	}
+
+	direct, err := r.IsDirectRoom(ctx, welcome.RoomID)
+	if err != nil {
+		return err
+	}
+	if !direct {
+		return clientapi.ErrForbidden
+	}
+
+	var activeMembers int64
+	if err := r.dbtx(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_members WHERE room_id = $1 AND left_at IS NULL`, welcome.RoomID).Scan(&activeMembers); err != nil {
+		return err
+	}
+	if activeMembers != 2 {
+		return clientapi.ErrForbidden
+	}
+
+	_, err = r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_room_welcomes (
+  room_id,
+  target_user_public_key,
+  sender_public_key,
+  welcome_bytes,
+  created_at,
+  updated_at
+) VALUES ($1, $2, $3, $4, COALESCE($5, NOW()), COALESCE($6, NOW()))
+ON CONFLICT (room_id, target_user_public_key)
+DO UPDATE SET
+  sender_public_key = EXCLUDED.sender_public_key,
+  welcome_bytes = EXCLUDED.welcome_bytes,
+  updated_at = EXCLUDED.updated_at
+`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
+	return err
+}
+
 func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
 	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
 		return clientapi.ChatRoomWelcomeRecord{}, err
@@ -338,8 +380,37 @@ func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID,
 		return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrForbidden
 	}
 
-	// Stored welcomes are kept as user events ("outbox") so clients can re-fetch
-	// them by room id after reconnects.
+	// Primary: durable welcome storage.
+	{
+		row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT sender_public_key, welcome_bytes, created_at, updated_at
+FROM chat_room_welcomes
+WHERE room_id = $1 AND target_user_public_key = $2
+`, roomID, targetUserPublicKey)
+		var senderPublicKey []byte
+		var welcomeBytes []byte
+		var createdAt time.Time
+		var updatedAt time.Time
+		switch err := row.Scan(&senderPublicKey, &welcomeBytes, &createdAt, &updatedAt); err {
+		case nil:
+			return clientapi.ChatRoomWelcomeRecord{
+				RoomID:              roomID,
+				TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+				SenderPublicKey:     senderPublicKey,
+				WelcomeBytes:        welcomeBytes,
+				CreatedAt:           createdAt,
+				UpdatedAt:           updatedAt,
+			}, nil
+		case sql.ErrNoRows:
+			// fall through to legacy outbox-backed storage below
+		default:
+			return clientapi.ChatRoomWelcomeRecord{}, err
+		}
+	}
+
+	// Legacy fallback: some older builds stored welcomes only as user events
+	// ("outbox"). Keep reading them for compatibility and backfill into the
+	// durable table when found.
 	row := r.dbtx(ctx).QueryRowContext(ctx, `
 SELECT payload, created_at
 FROM user_events
@@ -368,6 +439,24 @@ LIMIT 1
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
 	senderPublicKey, _ := decodeAnyBytes(decoded["senderPublicKey"])
+
+	// Best-effort backfill into durable storage to prevent future `not_found`
+	// if user event retention/ACK semantics differ across server builds.
+	_, _ = r.dbtx(ctx).ExecContext(ctx, `
+INSERT INTO chat_room_welcomes (
+  room_id,
+  target_user_public_key,
+  sender_public_key,
+  welcome_bytes,
+  created_at,
+  updated_at
+) VALUES ($1, $2, $3, $4, $5, $5)
+ON CONFLICT (room_id, target_user_public_key)
+DO UPDATE SET
+  sender_public_key = EXCLUDED.sender_public_key,
+  welcome_bytes = EXCLUDED.welcome_bytes,
+  updated_at = EXCLUDED.updated_at
+`, roomID, targetUserPublicKey, senderPublicKey, welcomeBytes, createdAt)
 
 	return clientapi.ChatRoomWelcomeRecord{
 		RoomID:              roomID,

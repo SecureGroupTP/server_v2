@@ -216,15 +216,15 @@ func (s *Service) UploadKeyPackages(ctx context.Context, sessionID uuid.UUID, us
 			ExpiresAt:       expiresAt,
 		})
 	}
-		if len(records) > 0 {
-			if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
-				return nil, err
-			}
-		}
-		recordedCount, err := s.store.InsertKeyPackages(ctx, records)
-		if err != nil {
+	if len(records) > 0 {
+		if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
 			return nil, err
 		}
+	}
+	recordedCount, err := s.store.InsertKeyPackages(ctx, records)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"recordedCount": recordedCount}, nil
 }
 
@@ -288,8 +288,28 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID 
 	if shouldStore && roomID != uuid.Nil {
 		payload["roomId"] = roomID.String()
 	}
-	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", payload); err != nil {
-		return nil, err
+
+	if shouldStore && roomID != uuid.Nil {
+		record := ChatRoomWelcomeRecord{
+			RoomID:              roomID,
+			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+			SenderPublicKey:     append([]byte(nil), user...),
+			WelcomeBytes:        append([]byte(nil), welcomeBytes...),
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		}
+		if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+			if err := s.store.UpsertRoomWelcome(txCtx, user, record); err != nil {
+				return err
+			}
+			return s.appendEvent(txCtx, targetUserPublicKey, "mlsWelcomeReceived", payload)
+		}); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", payload); err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil
 }

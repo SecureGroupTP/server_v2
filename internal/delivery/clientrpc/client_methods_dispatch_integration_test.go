@@ -97,7 +97,7 @@ func (s *dispatchStore) CreateDirectRoom(context.Context, clientapi.ChatRoomReco
 	return nil
 }
 func (s *dispatchStore) IsDirectRoom(context.Context, uuid.UUID) (bool, error) { return true, nil }
-func (s *dispatchStore) UpsertRoomWelcome(context.Context, clientapi.ChatRoomWelcomeRecord) error {
+func (s *dispatchStore) UpsertRoomWelcome(context.Context, []byte, clientapi.ChatRoomWelcomeRecord) error {
 	return nil
 }
 func (s *dispatchStore) GetRoomWelcome(context.Context, uuid.UUID, []byte) (clientapi.ChatRoomWelcomeRecord, error) {

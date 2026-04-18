@@ -69,6 +69,7 @@ type Store interface {
 	FindDirectRoomIDByUsers(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (uuid.UUID, bool, error)
 	CreateDirectRoom(ctx context.Context, room ChatRoomRecord, left ChatMemberRecord, right ChatMemberRecord, direct DirectRoomRecord) error
 	IsDirectRoom(ctx context.Context, roomID uuid.UUID) (bool, error)
+	UpsertRoomWelcome(ctx context.Context, userPublicKey []byte, welcome ChatRoomWelcomeRecord) error
 	GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (ChatRoomWelcomeRecord, error)
 
 	AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error)

@@ -115,6 +115,10 @@ func (s *storeMock) CreateDirectRoom(_ context.Context, room ChatRoomRecord, lef
 func (s *storeMock) IsDirectRoom(context.Context, uuid.UUID) (bool, error) {
 	return s.directRoom.RoomID != uuid.Nil, nil
 }
+func (s *storeMock) UpsertRoomWelcome(_ context.Context, _ []byte, welcome ChatRoomWelcomeRecord) error {
+	s.welcome = welcome
+	return nil
+}
 func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
 	return s.welcome, nil
 }
@@ -601,6 +605,15 @@ func TestServiceSendWelcomeStoresDirectWelcomeWhenRoomIDProvided(t *testing.T) {
 	}
 	if gotRoomID, ok := events.events[0].Payload["roomId"].(string); !ok || gotRoomID != roomID.String() {
 		t.Fatalf("expected roomId=%q in welcome event payload, got %#v", roomID.String(), events.events[0].Payload["roomId"])
+	}
+	if store.welcome.RoomID != roomID {
+		t.Fatalf("expected stored welcome for room=%s, got %#v", roomID, store.welcome)
+	}
+	if string(store.welcome.TargetUserPublicKey) != string(target) || string(store.welcome.SenderPublicKey) != string(sender) {
+		t.Fatalf("unexpected stored welcome parties: %#v", store.welcome)
+	}
+	if string(store.welcome.WelcomeBytes) != string(welcome) {
+		t.Fatalf("unexpected stored welcome bytes: %#v", store.welcome)
 	}
 }
 
