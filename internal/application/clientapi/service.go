@@ -216,22 +216,15 @@ func (s *Service) UploadKeyPackages(ctx context.Context, sessionID uuid.UUID, us
 			ExpiresAt:       expiresAt,
 		})
 	}
-	if len(records) > 0 {
-		if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
+		if len(records) > 0 {
+			if err := s.store.DeleteKeyPackagesByUserDevice(ctx, user, session.DeviceID); err != nil {
+				return nil, err
+			}
+		}
+		recordedCount, err := s.store.InsertKeyPackages(ctx, records)
+		if err != nil {
 			return nil, err
 		}
-		// Any stored direct-room Welcome intended for this user is now potentially
-		// stale because key packages are rotated per-device. Prefer "not_found" so
-		// the inviter can re-issue a fresh Welcome instead of clients looping on
-		// an un-joinable recovery Welcome.
-		if err := s.store.DeleteRoomWelcomesByTargetUser(ctx, user); err != nil {
-			return nil, err
-		}
-	}
-	recordedCount, err := s.store.InsertKeyPackages(ctx, records)
-	if err != nil {
-		return nil, err
-	}
 	return map[string]any{"recordedCount": recordedCount}, nil
 }
 
@@ -286,22 +279,16 @@ func (s *Service) SendWelcome(ctx context.Context, user []byte, requestedRoomID 
 		roomID = directRoomID
 		shouldStore = directFound
 	}
-	if shouldStore {
-		if err := s.store.UpsertRoomWelcome(ctx, ChatRoomWelcomeRecord{
-			RoomID:              roomID,
-			TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
-			SenderPublicKey:     append([]byte(nil), user...),
-			WelcomeBytes:        append([]byte(nil), welcomeBytes...),
-			CreatedAt:           now,
-			UpdatedAt:           now,
-		}); err != nil {
-			return nil, err
-		}
-	}
-	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", map[string]any{
+	payload := map[string]any{
 		"targetUserPublicKey": targetUserPublicKey,
+		"senderPublicKey":     user,
 		"welcomeBytes":        welcomeBytes,
-	}); err != nil {
+	}
+	// Direct rooms need the room id so clients can re-fetch by roomId after reconnect.
+	if shouldStore && roomID != uuid.Nil {
+		payload["roomId"] = roomID.String()
+	}
+	if err := s.appendEvent(ctx, targetUserPublicKey, "mlsWelcomeReceived", payload); err != nil {
 		return nil, err
 	}
 	return map[string]any{"acceptedAt": now.UTC().Format(time.RFC3339Nano)}, nil

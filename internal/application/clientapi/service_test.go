@@ -33,7 +33,6 @@ type storeMock struct {
 	memberCreated  ChatMemberRecord
 	groupInfo      ChatRoomGroupInfoRecord
 	welcome        ChatRoomWelcomeRecord
-	welcomesDeletedForTarget []byte
 	avatar         AvatarRecord
 	devices        []DeviceRecord
 	device         DeviceRecord
@@ -116,16 +115,8 @@ func (s *storeMock) CreateDirectRoom(_ context.Context, room ChatRoomRecord, lef
 func (s *storeMock) IsDirectRoom(context.Context, uuid.UUID) (bool, error) {
 	return s.directRoom.RoomID != uuid.Nil, nil
 }
-func (s *storeMock) UpsertRoomWelcome(_ context.Context, welcome ChatRoomWelcomeRecord) error {
-	s.welcome = welcome
-	return nil
-}
 func (s *storeMock) GetRoomWelcome(context.Context, uuid.UUID, []byte) (ChatRoomWelcomeRecord, error) {
 	return s.welcome, nil
-}
-func (s *storeMock) DeleteRoomWelcomesByTargetUser(_ context.Context, targetUserPublicKey []byte) error {
-	s.welcomesDeletedForTarget = append([]byte(nil), targetUserPublicKey...)
-	return nil
 }
 func (s *storeMock) AreFriends(context.Context, []byte, []byte) (bool, error) {
 	return s.areFriends, nil
@@ -605,20 +596,11 @@ func TestServiceSendWelcomeStoresDirectWelcomeWhenRoomIDProvided(t *testing.T) {
 	if response["acceptedAt"] == nil {
 		t.Fatalf("expected acceptedAt: %#v", response)
 	}
-	if store.welcome.RoomID != roomID {
-		t.Fatalf("unexpected stored welcome room: %#v", store.welcome)
-	}
-	if string(store.welcome.TargetUserPublicKey) != string(target) {
-		t.Fatalf("unexpected stored welcome target: %#v", store.welcome.TargetUserPublicKey)
-	}
-	if string(store.welcome.SenderPublicKey) != string(sender) {
-		t.Fatalf("unexpected stored welcome sender: %#v", store.welcome.SenderPublicKey)
-	}
-	if string(store.welcome.WelcomeBytes) != string(welcome) {
-		t.Fatalf("unexpected stored welcome bytes: %#v", store.welcome.WelcomeBytes)
-	}
 	if len(events.events) != 1 || events.events[0].EventType != "mlsWelcomeReceived" {
 		t.Fatalf("unexpected welcome events: %#v", events.events)
+	}
+	if gotRoomID, ok := events.events[0].Payload["roomId"].(string); !ok || gotRoomID != roomID.String() {
+		t.Fatalf("expected roomId=%q in welcome event payload, got %#v", roomID.String(), events.events[0].Payload["roomId"])
 	}
 }
 
@@ -1004,9 +986,6 @@ func TestServiceCoversRemainingRPCSuccessPaths(t *testing.T) {
 		"expiresAt":       expiresAt,
 	}}); err != nil || response["recordedCount"] != 1 || len(store.keyPackages) != 1 || !store.keyPackages[0].IsLastResort {
 		t.Fatalf("upload key packages response=%#v records=%#v err=%v", response, store.keyPackages, err)
-	}
-	if string(store.welcomesDeletedForTarget) != string(user) {
-		t.Fatalf("expected welcomes to be invalidated for target user")
 	}
 	if response, err := service.FetchKeyPackages(context.Background(), [][]byte{peer}); err != nil || len(response["items"].([]map[string]any)) != 1 {
 		t.Fatalf("fetch key packages response=%#v err=%v", response, err)

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	clientapi "server_v2/internal/application/clientapi"
+	domainauth "server_v2/internal/domain/auth"
 )
 
 func TestClientRepositoryRoomMemberStats(t *testing.T) {
@@ -161,15 +162,24 @@ func TestClientRepositoryMlsArtifactsAndInvitationContract(t *testing.T) {
 		t.Fatalf("expected direct room, direct=%v err=%v", direct, err)
 	}
 
-	if err := repo.UpsertRoomWelcome(context.Background(), clientapi.ChatRoomWelcomeRecord{
-		RoomID:              roomID,
-		TargetUserPublicKey: user2,
-		SenderPublicKey:     user1,
-		WelcomeBytes:        []byte("welcome"),
-		CreatedAt:           now,
-		UpdatedAt:           now,
+	// Welcomes are stored as user events ("outbox") so clients can re-fetch them by room id.
+	authRepo := NewAuthRepository(store.DB())
+	eventNow := time.Now().UTC()
+	if err := authRepo.Append(context.Background(), domainauth.Event{
+		EventID:       uuid.New(),
+		UserPublicKey: user2,
+		EventType:     "mlsWelcomeReceived",
+		Payload: map[string]any{
+			"roomId":              roomID.String(),
+			"targetUserPublicKey": user2,
+			"senderPublicKey":     user1,
+			"welcomeBytes":        []byte("welcome"),
+		},
+		AvailableAt: eventNow.Add(-time.Second),
+		ExpiresAt:   eventNow.Add(time.Hour),
+		CreatedAt:   eventNow,
 	}); err != nil {
-		t.Fatalf("upsert room welcome: %v", err)
+		t.Fatalf("append welcome event: %v", err)
 	}
 	welcome, err := repo.GetRoomWelcome(context.Background(), roomID, user2)
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,6 +17,26 @@ import (
 
 type ClientRepository struct {
 	db *sql.DB
+}
+
+func decodeAnyBytes(value any) ([]byte, error) {
+	switch v := value.(type) {
+	case nil:
+		return nil, nil
+	case []byte:
+		return append([]byte(nil), v...), nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		out, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unexpected bytes value type %T", value)
+	}
 }
 
 func NewClientRepository(db *sql.DB) *ClientRepository {
@@ -295,16 +317,6 @@ SELECT EXISTS (
 	return exists, nil
 }
 
-func (r *ClientRepository) UpsertRoomWelcome(ctx context.Context, welcome clientapi.ChatRoomWelcomeRecord) error {
-	_, err := r.dbtx(ctx).ExecContext(ctx, `
-INSERT INTO chat_room_welcomes (room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (room_id, target_user_public_key)
-DO UPDATE SET sender_public_key = EXCLUDED.sender_public_key, welcome_bytes = EXCLUDED.welcome_bytes, updated_at = EXCLUDED.updated_at
-`, welcome.RoomID, welcome.TargetUserPublicKey, welcome.SenderPublicKey, welcome.WelcomeBytes, welcome.CreatedAt, welcome.UpdatedAt)
-	return err
-}
-
 func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID, targetUserPublicKey []byte) (clientapi.ChatRoomWelcomeRecord, error) {
 	if _, err := r.ensureMember(ctx, roomID, targetUserPublicKey); err != nil {
 		return clientapi.ChatRoomWelcomeRecord{}, err
@@ -326,27 +338,45 @@ func (r *ClientRepository) GetRoomWelcome(ctx context.Context, roomID uuid.UUID,
 		return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrForbidden
 	}
 
+	// Stored welcomes are kept as user events ("outbox") so clients can re-fetch
+	// them by room id after reconnects.
 	row := r.dbtx(ctx).QueryRowContext(ctx, `
-SELECT room_id, target_user_public_key, sender_public_key, welcome_bytes, created_at, updated_at
-FROM chat_room_welcomes
-WHERE room_id = $1 AND target_user_public_key = $2
-`, roomID, targetUserPublicKey)
-	var out clientapi.ChatRoomWelcomeRecord
-	if err := row.Scan(&out.RoomID, &out.TargetUserPublicKey, &out.SenderPublicKey, &out.WelcomeBytes, &out.CreatedAt, &out.UpdatedAt); err != nil {
+SELECT payload, created_at
+FROM user_events
+WHERE user_public_key = $1
+  AND event_type = 'mlsWelcomeReceived'
+  AND payload->>'roomId' = $2
+  AND available_at <= NOW()
+  AND expires_at > NOW()
+ORDER BY created_at DESC
+LIMIT 1
+`, targetUserPublicKey, roomID.String())
+	var rawPayload []byte
+	var createdAt time.Time
+	if err := row.Scan(&rawPayload, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return clientapi.ChatRoomWelcomeRecord{}, clientapi.ErrNotFound
 		}
 		return clientapi.ChatRoomWelcomeRecord{}, err
 	}
-	return out, nil
-}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawPayload, &decoded); err != nil {
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+	welcomeBytes, err := decodeAnyBytes(decoded["welcomeBytes"])
+	if err != nil {
+		return clientapi.ChatRoomWelcomeRecord{}, err
+	}
+	senderPublicKey, _ := decodeAnyBytes(decoded["senderPublicKey"])
 
-func (r *ClientRepository) DeleteRoomWelcomesByTargetUser(ctx context.Context, targetUserPublicKey []byte) error {
-	_, err := r.dbtx(ctx).ExecContext(ctx, `
-DELETE FROM chat_room_welcomes
-WHERE target_user_public_key = $1
-`, targetUserPublicKey)
-	return err
+	return clientapi.ChatRoomWelcomeRecord{
+		RoomID:              roomID,
+		TargetUserPublicKey: append([]byte(nil), targetUserPublicKey...),
+		SenderPublicKey:     senderPublicKey,
+		WelcomeBytes:        welcomeBytes,
+		CreatedAt:           createdAt,
+		UpdatedAt:           createdAt,
+	}, nil
 }
 
 func (r *ClientRepository) AreFriends(ctx context.Context, leftUserPublicKey []byte, rightUserPublicKey []byte) (bool, error) {
