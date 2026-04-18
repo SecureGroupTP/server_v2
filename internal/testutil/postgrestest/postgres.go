@@ -3,10 +3,13 @@ package postgrestest
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +83,15 @@ func applyMigrations(t testing.TB, db *sql.DB) {
 	if len(migrations) == 0 {
 		t.Fatal("no postgres migrations found")
 	}
-	sort.Strings(migrations)
+	sort.Slice(migrations, func(i, j int) bool {
+		vi, errI := migrationVersion(filepath.Base(migrations[i]))
+		vj, errJ := migrationVersion(filepath.Base(migrations[j]))
+		if errI == nil && errJ == nil && vi != vj {
+			return vi < vj
+		}
+		// Fall back to stable lexicographic order for unknown formats.
+		return migrations[i] < migrations[j]
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -93,6 +104,22 @@ func applyMigrations(t testing.TB, db *sql.DB) {
 			t.Fatalf("apply migration %s: %v", filepath.Base(migration), err)
 		}
 	}
+}
+
+func migrationVersion(filename string) (int, error) {
+	base := strings.TrimSpace(filename)
+	if !strings.HasPrefix(base, "V") {
+		return 0, fmt.Errorf("missing V prefix")
+	}
+	parts := strings.SplitN(base[1:], "__", 2)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("missing __ separator")
+	}
+	v, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, fmt.Errorf("invalid version %q: %w", parts[0], err)
+	}
+	return v, nil
 }
 
 func repoRoot(t testing.TB) string {
