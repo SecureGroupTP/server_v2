@@ -38,3 +38,5 @@ bin/
 build/
 dist/
 .DS_Store
+.worktrees/
+worktrees/
