@@ -25,6 +25,18 @@ type AppConfiguration struct {
 	TLS                     AppTLSConfiguration   `yaml:"tls"`
 }
 
+type PushConfiguration struct {
+	FCM PushFCMConfiguration `yaml:"fcm"`
+}
+
+type PushFCMConfiguration struct {
+	Enabled         bool          `yaml:"enabled"`
+	CredentialsFile string        `yaml:"credentials_file"`
+	ProjectID       string        `yaml:"project_id"`
+	Endpoint        string        `yaml:"endpoint"`
+	Timeout         time.Duration `yaml:"timeout"`
+}
+
 type AppPortsConfiguration struct {
 	TCPPort    int `yaml:"tcp_port"`
 	TCPTLSPort int `yaml:"tcp_tls_port"`
@@ -89,6 +101,16 @@ func (a AppConfiguration) Validate() error {
 		return fmt.Errorf("app.outbox_drop_retention must be >= 0")
 	}
 
+	return nil
+}
+
+func (p PushConfiguration) Validate() error {
+	if !p.FCM.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(p.FCM.CredentialsFile) == "" {
+		return fmt.Errorf("push.fcm.credentials_file is required when push.fcm.enabled = true")
+	}
 	return nil
 }
 

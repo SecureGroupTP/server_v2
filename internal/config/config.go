@@ -13,10 +13,11 @@ import (
 const DefaultPath = "config/config.yaml"
 
 type Config struct {
-	App      AppConfiguration `yaml:"app"`
-	Logger   LoggerConfig     `yaml:"logger"`
-	Postgres PostgresConfig   `yaml:"postgres"`
-	Redis    RedisConfig      `yaml:"redis"`
+	App      AppConfiguration  `yaml:"app"`
+	Push     PushConfiguration `yaml:"push"`
+	Logger   LoggerConfig      `yaml:"logger"`
+	Postgres PostgresConfig    `yaml:"postgres"`
+	Redis    RedisConfig       `yaml:"redis"`
 }
 
 func Load(path string) (Config, error) {
@@ -46,6 +47,9 @@ func Load(path string) (Config, error) {
 
 func (c Config) validate() error {
 	if err := c.App.Validate(); err != nil {
+		return err
+	}
+	if err := c.Push.Validate(); err != nil {
 		return err
 	}
 	if err := c.Logger.Validate(); err != nil {
@@ -135,6 +139,24 @@ func applyEnvOverrides(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("APP_OUTBOX_DROP_RETENTION")); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			cfg.App.OutboxDropRetention = duration
+		}
+	}
+
+	if value := strings.TrimSpace(os.Getenv("PUSH_FCM_ENABLED")); value != "" {
+		cfg.Push.FCM.Enabled = value == "1" || strings.EqualFold(value, "true")
+	}
+	if value := strings.TrimSpace(os.Getenv("PUSH_FCM_CREDENTIALS_FILE")); value != "" {
+		cfg.Push.FCM.CredentialsFile = value
+	}
+	if value := strings.TrimSpace(os.Getenv("PUSH_FCM_PROJECT_ID")); value != "" {
+		cfg.Push.FCM.ProjectID = value
+	}
+	if value := strings.TrimSpace(os.Getenv("PUSH_FCM_ENDPOINT")); value != "" {
+		cfg.Push.FCM.Endpoint = value
+	}
+	if value := strings.TrimSpace(os.Getenv("PUSH_FCM_TIMEOUT")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			cfg.Push.FCM.Timeout = duration
 		}
 	}
 }

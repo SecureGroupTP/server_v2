@@ -17,6 +17,14 @@ app:
   event_batch_size: 100
   event_redelivery_cooldown: 5s
 
+push:
+  fcm:
+    enabled: false
+    credentials_file: ""
+    project_id: ""
+    endpoint: "https://fcm.googleapis.com"
+    timeout: 10s
+
 logger:
   level: info
   human_readable: false

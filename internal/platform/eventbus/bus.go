@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"sync/atomic"
+
+	appoutbox "server_v2/internal/application/outbox"
 )
 
 // Bus is an in-process best-effort notifier keyed by user public key.
@@ -79,6 +81,8 @@ func (b *Bus) NotifyKey(key string) {
 		}
 	}
 }
+
+func (b *Bus) NotifyOutboxEvent(appoutbox.Event) {}
 
 func keyString(userPublicKey []byte) string {
 	if len(userPublicKey) == 0 {

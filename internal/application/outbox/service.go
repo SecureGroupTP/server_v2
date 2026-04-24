@@ -26,6 +26,7 @@ type Clock interface {
 
 type Notifier interface {
 	NotifyKey(key string)
+	NotifyOutboxEvent(event Event)
 }
 
 type Repository interface {
@@ -111,6 +112,7 @@ func (s *Service) DispatchOnce(ctx context.Context) (int, error) {
 	}
 	for _, event := range events {
 		if s.notifier != nil {
+			s.notifier.NotifyOutboxEvent(event)
 			s.notifier.NotifyKey(event.DeviceID)
 		}
 	}

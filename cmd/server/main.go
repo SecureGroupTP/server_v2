@@ -11,8 +11,10 @@ import (
 	appauth "server_v2/internal/application/auth"
 	clientapi "server_v2/internal/application/clientapi"
 	appoutbox "server_v2/internal/application/outbox"
+	apppush "server_v2/internal/application/push"
 	"server_v2/internal/config"
 	"server_v2/internal/delivery/clientrpc"
+	"server_v2/internal/integrations/push/fcm"
 	"server_v2/internal/platform/clock"
 	"server_v2/internal/platform/eventbus"
 	"server_v2/internal/platform/logging"
@@ -64,6 +66,13 @@ func main() {
 	clientRepository := postgres.NewClientRepository(store.DB())
 	txManager := postgres.NewTxManager(store.DB())
 	bus := eventbus.New()
+	fcmClient, err := fcm.NewClient(context.Background(), cfg.Push.FCM)
+	if err != nil {
+		logger.Error("failed to initialize fcm client", "error", err)
+		os.Exit(1)
+	}
+	pushNotifier := apppush.NewNotifier(clientRepository, fcmClient, 256)
+	outboxNotifier := appoutbox.NewMultiNotifier(bus, pushNotifier)
 	outboxService, err := appoutbox.NewService(appoutbox.Config{
 		PollInterval:      cfg.App.OutboxPollInterval,
 		BatchSizeSegments: cfg.App.OutboxBatchSizeSegments,
@@ -72,7 +81,7 @@ func main() {
 		JanitorInterval:   cfg.App.OutboxJanitorInterval,
 		AckRetention:      cfg.App.OutboxAckRetention,
 		DropRetention:     cfg.App.OutboxDropRetention,
-	}, clock.Real{}, txManager, authRepository, bus)
+	}, clock.Real{}, txManager, authRepository, outboxNotifier)
 	if err != nil {
 		logger.Error("failed to initialize outbox service", "error", err)
 		os.Exit(1)
@@ -142,6 +151,11 @@ func main() {
 	}()
 	go func() {
 		if runErr := outboxService.RunJanitor(ctx); runErr != nil && ctx.Err() == nil {
+			runtimeErrCh <- runErr
+		}
+	}()
+	go func() {
+		if runErr := pushNotifier.Run(ctx); runErr != nil && ctx.Err() == nil {
 			runtimeErrCh <- runErr
 		}
 	}()

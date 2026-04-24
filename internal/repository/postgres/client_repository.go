@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	clientapi "server_v2/internal/application/clientapi"
+	apppush "server_v2/internal/application/push"
 )
 
 type ClientRepository struct {
@@ -179,6 +180,43 @@ func (r *ClientRepository) lookupDeviceIdentifier(ctx context.Context, userPubli
 		return "", err
 	}
 	return deviceIdentifier, nil
+}
+
+func (r *ClientRepository) LookupDevice(ctx context.Context, deviceID string) (apppush.TargetDevice, error) {
+	row := r.dbtx(ctx).QueryRowContext(ctx, `
+SELECT device_id, platform, push_token, is_enabled
+FROM device_push_tokens
+WHERE device_id = $1
+ORDER BY updated_at DESC
+LIMIT 1
+`, deviceID)
+	var out apppush.TargetDevice
+	if err := row.Scan(&out.DeviceID, &out.Platform, &out.PushToken, &out.IsEnabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apppush.TargetDevice{}, nil
+		}
+		return apppush.TargetDevice{}, err
+	}
+	out.Found = true
+	return out, nil
+}
+
+func (r *ClientRepository) LookupProfileName(ctx context.Context, publicKey []byte) (string, error) {
+	profile, err := r.GetProfile(ctx, publicKey)
+	if err != nil {
+		if errors.Is(err, clientapi.ErrNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	switch {
+	case profile.DisplayName != "":
+		return profile.DisplayName, nil
+	case profile.Username != "":
+		return profile.Username, nil
+	default:
+		return "", nil
+	}
 }
 
 func (r *ClientRepository) InsertKeyPackages(ctx context.Context, keyPackages []clientapi.KeyPackageRecord) (int, error) {
