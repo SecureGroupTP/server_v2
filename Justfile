@@ -62,6 +62,7 @@ run:
 
 [doc("Start Postgres, Redis, Flyway migrations, app, and Nginx through Docker Compose.")]
 up: docker-preflight init-config cert-selfsigned nginx-check
+    mkdir -p secrets
     docker compose up --build
 
 [doc("Start only infrastructure services and migrations through Docker Compose.")]

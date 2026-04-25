@@ -268,6 +268,26 @@ REDIS_PORT=6379
   `http_port: 8080`, `ws_port: 8080`
 - `app.output_ports` - то, что увидит клиент снаружи через Nginx
 
+## Docker Push Credentials
+
+Для FCM положи service account JSON в локальную ignored-папку:
+
+```bash
+mkdir -p secrets
+cp /path/to/firebase-service-account.json secrets/firebase-service-account.json
+chmod 600 secrets/firebase-service-account.json
+```
+
+И задай в `server/.env`:
+
+```env
+PUSH_FCM_ENABLED=true
+PUSH_FCM_CREDENTIALS_FILE=/app/secrets/firebase-service-account.json
+PUSH_FCM_PROJECT_ID=sgtp-3a2b6
+```
+
+`docker-compose.yml` монтирует `./secrets` в контейнер как `/app/secrets:ro`.
+
 ## Production Notes
 
 - Не храни production secrets в `config/config.yaml` внутри репозитория.

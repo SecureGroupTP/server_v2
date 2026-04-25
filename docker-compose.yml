@@ -23,8 +23,14 @@ services:
       target: runtime
     environment:
       APP_CONFIG_PATH: /app/config/config.yaml
+      PUSH_FCM_ENABLED: ${PUSH_FCM_ENABLED:-false}
+      PUSH_FCM_CREDENTIALS_FILE: ${PUSH_FCM_CREDENTIALS_FILE:-}
+      PUSH_FCM_PROJECT_ID: ${PUSH_FCM_PROJECT_ID:-}
+      PUSH_FCM_ENDPOINT: ${PUSH_FCM_ENDPOINT:-}
+      PUSH_FCM_TIMEOUT: ${PUSH_FCM_TIMEOUT:-}
     volumes:
       - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./secrets:/app/secrets:ro
     depends_on:
       flyway:
         condition: service_completed_successfully
