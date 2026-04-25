@@ -95,6 +95,15 @@ func TestHandlerAuthHTTPFlow(t *testing.T) {
 		t.Fatalf("unexpected profile-required response: %#v", blockedResponse[0].Parameters)
 	}
 
+	emptyProfileResponse := callRPC(t, client, serverURL, privateKey, "updateProfile", map[string]any{"displayName": ""})
+	if emptyProfileResponse[0].Parameters["updatedAt"] == nil {
+		t.Fatalf("expected empty profile update response: %#v", emptyProfileResponse[0].Parameters)
+	}
+	stillBlockedResponse := callRPC(t, client, serverURL, privateKey, "getServerConfig", map[string]any{})
+	if code := extractErrorCode(t, stillBlockedResponse[0].Parameters); code != "profile_required" {
+		t.Fatalf("expected profile_required after empty profile update, got %#v", stillBlockedResponse[0].Parameters)
+	}
+
 	updateProfileResponse := callRPC(t, client, serverURL, privateKey, "updateProfile", map[string]any{"displayName": "Alice"})
 	if updateProfileResponse[0].Parameters["updatedAt"] == nil {
 		t.Fatalf("expected profile update response: %#v", updateProfileResponse[0].Parameters)

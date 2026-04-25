@@ -34,7 +34,11 @@ func (h *Handler) handleClientAPICall(ctx context.Context, payload rpc.RequestPa
 		return rpc.ResponsePacket{}, state, err
 	}
 	if payload.RPCCall == "updateProfile" {
-		state.ProfileCompleted = true
+		profileCompleted, err := h.profileCompleted(ctx, state.UserPublicKey)
+		if err != nil {
+			return rpc.ResponsePacket{}, state, err
+		}
+		state.ProfileCompleted = profileCompleted
 	}
 	return rpc.ResponsePacket{RequestID: uuid.New(), ReplyToRequestID: &payload.RequestID, EventType: "rpcCallResponse", Parameters: responseParams}, state, nil
 }
