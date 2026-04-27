@@ -73,7 +73,7 @@ func NewClient(ctx context.Context, cfg config.PushFCMConfiguration) (*Client, e
 
 func (c *Client) Send(ctx context.Context, token string, envelope apppush.Envelope) error {
 	if c == nil || !c.enabled {
-		return nil
+		return apppush.ErrDisabled
 	}
 	body := map[string]any{
 		"message": map[string]any{

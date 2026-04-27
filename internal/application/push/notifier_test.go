@@ -1,7 +1,11 @@
 package push
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +66,48 @@ func TestNotifierQueuesAndSendsAndroidPush(t *testing.T) {
 	}
 }
 
+func TestNotifierLogsPushSendFailures(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	store := &stubStore{
+		device: TargetDevice{
+			DeviceID:  "device-1",
+			Platform:  2,
+			PushToken: "fcm-token",
+			IsEnabled: true,
+			Found:     true,
+		},
+		profileName: "Alice",
+	}
+	sender := &stubSender{err: errors.New("fcm unavailable")}
+	notifier := NewNotifierWithLogger(store, sender, 4, logger)
+
+	notifier.process(context.Background(), appoutbox.Event{
+		EventID:   mustUUID("22222222-2222-2222-2222-222222222222"),
+		DeviceID:  "device-1",
+		SegmentID: "global:friend.requestReceived",
+		EventType: "friend.requestReceived",
+		Payload: map[string]any{
+			"requestId":       "request-1",
+			"senderPublicKey": []byte{0xAA},
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
+	logged := out.String()
+	if !strings.Contains(logged, "fcm push send failed") {
+		t.Fatalf("expected fcm send failure log, got %q", logged)
+	}
+	if !strings.Contains(logged, "fcm unavailable") {
+		t.Fatalf("expected fcm error in log, got %q", logged)
+	}
+	if strings.Contains(logged, "fcm-token") {
+		t.Fatalf("push token leaked in log: %q", logged)
+	}
+}
+
 type stubStore struct {
 	device      TargetDevice
 	profileName string
@@ -77,6 +123,7 @@ func (s *stubStore) LookupProfileName(context.Context, []byte) (string, error) {
 
 type stubSender struct {
 	calls []sendCall
+	err   error
 }
 
 type sendCall struct {
@@ -86,7 +133,7 @@ type sendCall struct {
 
 func (s *stubSender) Send(_ context.Context, token string, envelope Envelope) error {
 	s.calls = append(s.calls, sendCall{token: token, envelope: envelope})
-	return nil
+	return s.err
 }
 
 func mustUUID(value string) uuid.UUID {

@@ -3,6 +3,7 @@ package fcm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -90,8 +91,8 @@ func TestSendDisabledClientNoops(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{}
-	if err := client.Send(context.Background(), "token-1", apppush.Envelope{}); err != nil {
-		t.Fatalf("expected disabled client to noop, got %v", err)
+	if err := client.Send(context.Background(), "token-1", apppush.Envelope{}); !errors.Is(err, apppush.ErrDisabled) {
+		t.Fatalf("expected disabled client error, got %v", err)
 	}
 }
 

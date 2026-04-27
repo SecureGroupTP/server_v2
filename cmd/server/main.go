@@ -71,7 +71,7 @@ func main() {
 		logger.Error("failed to initialize fcm client", "error", err)
 		os.Exit(1)
 	}
-	pushNotifier := apppush.NewNotifier(clientRepository, fcmClient, 256)
+	pushNotifier := apppush.NewNotifierWithLogger(clientRepository, fcmClient, 256, logging.WithSource(logger, "server_v2/internal/application/push.Notifier"))
 	outboxNotifier := appoutbox.NewMultiNotifier(bus, pushNotifier)
 	outboxService, err := appoutbox.NewService(appoutbox.Config{
 		PollInterval:      cfg.App.OutboxPollInterval,
