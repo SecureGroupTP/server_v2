@@ -14,7 +14,7 @@ func TestChatRoomWelcomesConflictTargetRepairMigrationExists(t *testing.T) {
 		root,
 		"db",
 		"migrations",
-		"V9__chat_room_welcomes_conflict_target.sql",
+		"V12__chat_room_welcomes_conflict_target.sql",
 	)
 	payload, err := os.ReadFile(migrationPath)
 	if err != nil {

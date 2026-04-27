@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +82,14 @@ func applyMigrations(t testing.TB, db *sql.DB) {
 	if len(migrations) == 0 {
 		t.Fatal("no postgres migrations found")
 	}
-	sort.Strings(migrations)
+	sort.SliceStable(migrations, func(i, j int) bool {
+		leftVersion, leftOK := migrationVersion(migrations[i])
+		rightVersion, rightOK := migrationVersion(migrations[j])
+		if leftOK && rightOK && leftVersion != rightVersion {
+			return leftVersion < rightVersion
+		}
+		return filepath.Base(migrations[i]) < filepath.Base(migrations[j])
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -93,6 +102,22 @@ func applyMigrations(t testing.TB, db *sql.DB) {
 			t.Fatalf("apply migration %s: %v", filepath.Base(migration), err)
 		}
 	}
+}
+
+func migrationVersion(path string) (int, bool) {
+	name := filepath.Base(path)
+	if !strings.HasPrefix(name, "V") {
+		return 0, false
+	}
+	separator := strings.Index(name, "__")
+	if separator < 0 {
+		return 0, false
+	}
+	version, err := strconv.Atoi(name[1:separator])
+	if err != nil {
+		return 0, false
+	}
+	return version, true
 }
 
 func repoRoot(t testing.TB) string {
