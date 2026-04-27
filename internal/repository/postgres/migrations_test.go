@@ -21,11 +21,14 @@ func TestChatRoomWelcomesConflictTargetRepairMigrationExists(t *testing.T) {
 		t.Fatalf("read repair migration: %v", err)
 	}
 	sql := strings.ToLower(string(payload))
-	if !strings.Contains(sql, "create unique index if not exists chat_room_welcomes_pkey") {
+	if !strings.Contains(sql, "create unique index if not exists chat_room_welcomes_room_target_uidx") {
 		t.Fatalf("repair migration must create unique conflict target index, got:\n%s", payload)
 	}
 	if !strings.Contains(sql, "(room_id, target_user_public_key)") {
 		t.Fatalf("repair migration must cover room_id and target_user_public_key, got:\n%s", payload)
+	}
+	if !strings.Contains(sql, "alter column target_device_id set default ''") {
+		t.Fatalf("repair migration must keep legacy target_device_id inserts compatible, got:\n%s", payload)
 	}
 }
 
