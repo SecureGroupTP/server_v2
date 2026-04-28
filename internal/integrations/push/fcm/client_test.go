@@ -106,6 +106,24 @@ func TestSendBuildsExpectedFCMRequest(t *testing.T) {
 	if androidNotification["channel_id"] != "sgtp_app_notifications" {
 		t.Fatalf("unexpected android channel: %#v", androidNotification["channel_id"])
 	}
+	if androidNotification["icon"] != "ic_stat_sgtp_notification" {
+		t.Fatalf("unexpected android icon: %#v", androidNotification["icon"])
+	}
+	if androidNotification["sound"] != "default" {
+		t.Fatalf("unexpected android sound: %#v", androidNotification["sound"])
+	}
+	if androidNotification["default_sound"] != true {
+		t.Fatalf("expected default android sound, got %#v", androidNotification["default_sound"])
+	}
+	if androidNotification["default_vibrate_timings"] != true {
+		t.Fatalf("expected default android vibrate timings, got %#v", androidNotification["default_vibrate_timings"])
+	}
+	if androidNotification["notification_priority"] != "PRIORITY_HIGH" {
+		t.Fatalf("unexpected android notification priority: %#v", androidNotification["notification_priority"])
+	}
+	if androidNotification["visibility"] != "PUBLIC" {
+		t.Fatalf("unexpected android visibility: %#v", androidNotification["visibility"])
+	}
 }
 
 func TestSendDisabledClientNoops(t *testing.T) {

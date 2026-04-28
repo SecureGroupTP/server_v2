@@ -87,7 +87,13 @@ func (c *Client) Send(ctx context.Context, token string, envelope apppush.Envelo
 			"android": map[string]any{
 				"priority": "high",
 				"notification": map[string]any{
-					"channel_id": defaultChannelID,
+					"channel_id":              defaultChannelID,
+					"icon":                    "ic_stat_sgtp_notification",
+					"sound":                   "default",
+					"default_sound":           true,
+					"default_vibrate_timings": true,
+					"notification_priority":   "PRIORITY_HIGH",
+					"visibility":              "PUBLIC",
 				},
 			},
 		},
