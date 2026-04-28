@@ -22,6 +22,7 @@ const (
 	firebaseMessagingScope = "https://www.googleapis.com/auth/firebase.messaging"
 	defaultEndpoint        = "https://fcm.googleapis.com"
 	defaultChannelID       = "sgtp_app_notifications"
+	defaultAndroidTTL      = "2419200s"
 )
 
 type Client struct {
@@ -86,6 +87,7 @@ func (c *Client) Send(ctx context.Context, token string, envelope apppush.Envelo
 			"data": apppush.EnvelopeData(envelope),
 			"android": map[string]any{
 				"priority": "high",
+				"ttl":      defaultAndroidTTL,
 				"notification": map[string]any{
 					"channel_id":              defaultChannelID,
 					"icon":                    "ic_stat_sgtp_notification",

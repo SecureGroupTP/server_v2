@@ -108,6 +108,48 @@ func TestNotifierLogsPushSendFailures(t *testing.T) {
 	}
 }
 
+func TestNotifierSkipsOutboxRetryAttempts(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	store := &stubStore{
+		device: TargetDevice{
+			DeviceID:  "device-1",
+			Platform:  2,
+			PushToken: "fcm-token",
+			IsEnabled: true,
+			Found:     true,
+		},
+		profileName: "Alice",
+	}
+	sender := &stubSender{}
+	notifier := NewNotifierWithLogger(store, sender, 4, logger)
+
+	notifier.process(context.Background(), appoutbox.Event{
+		EventID:   mustUUID("33333333-3333-3333-3333-333333333333"),
+		DeviceID:  "device-1",
+		SegmentID: "global:friend.requestReceived",
+		EventType: "friend.requestReceived",
+		Payload: map[string]any{
+			"requestId":       "request-1",
+			"senderPublicKey": []byte{0xAA},
+		},
+		CreatedAt: time.Now().UTC(),
+		Attempts:  2,
+	})
+
+	if len(sender.calls) != 0 {
+		t.Fatalf("expected retry attempt to skip FCM send, got %d", len(sender.calls))
+	}
+	if !strings.Contains(out.String(), "fcm push skipped") {
+		t.Fatalf("expected skip log, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "outbox_retry_attempt") {
+		t.Fatalf("expected retry skip reason, got %q", out.String())
+	}
+}
+
 type stubStore struct {
 	device      TargetDevice
 	profileName string

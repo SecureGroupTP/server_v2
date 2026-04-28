@@ -78,6 +78,19 @@ func (n *Notifier) Run(ctx context.Context) error {
 }
 
 func (n *Notifier) process(ctx context.Context, event appoutbox.Event) {
+	if event.Attempts > 1 {
+		n.logger.Info(
+			"fcm push skipped",
+			"reason", "outbox_retry_attempt",
+			"event_id", event.EventID.String(),
+			"event_type", event.EventType,
+			"device_id", event.DeviceID,
+			"segment_id", event.SegmentID,
+			"attempts", event.Attempts,
+		)
+		return
+	}
+
 	envelope, ok := MapOutboxEvent(event, func(publicKey []byte) string {
 		name, err := n.store.LookupProfileName(ctx, publicKey)
 		if err != nil {

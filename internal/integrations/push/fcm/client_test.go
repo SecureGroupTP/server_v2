@@ -99,6 +99,9 @@ func TestSendBuildsExpectedFCMRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing android body: %#v", message["android"])
 	}
+	if android["ttl"] != "2419200s" {
+		t.Fatalf("unexpected android ttl: %#v", android["ttl"])
+	}
 	androidNotification, ok := android["notification"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing android notification body: %#v", android["notification"])
