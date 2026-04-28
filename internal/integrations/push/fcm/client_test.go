@@ -85,6 +85,27 @@ func TestSendBuildsExpectedFCMRequest(t *testing.T) {
 	if data["deviceId"] != "device-1" {
 		t.Fatalf("unexpected device id: %#v", data["deviceId"])
 	}
+	notification, ok := message["notification"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing notification body: %#v", message["notification"])
+	}
+	if notification["title"] != "Alice" {
+		t.Fatalf("unexpected notification title: %#v", notification["title"])
+	}
+	if notification["body"] != "1 new message" {
+		t.Fatalf("unexpected notification body: %#v", notification["body"])
+	}
+	android, ok := message["android"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing android body: %#v", message["android"])
+	}
+	androidNotification, ok := android["notification"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing android notification body: %#v", android["notification"])
+	}
+	if androidNotification["channel_id"] != "sgtp_app_notifications" {
+		t.Fatalf("unexpected android channel: %#v", androidNotification["channel_id"])
+	}
 }
 
 func TestSendDisabledClientNoops(t *testing.T) {

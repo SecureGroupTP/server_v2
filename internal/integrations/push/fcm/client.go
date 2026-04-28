@@ -21,6 +21,7 @@ import (
 const (
 	firebaseMessagingScope = "https://www.googleapis.com/auth/firebase.messaging"
 	defaultEndpoint        = "https://fcm.googleapis.com"
+	defaultChannelID       = "sgtp_app_notifications"
 )
 
 type Client struct {
@@ -78,9 +79,16 @@ func (c *Client) Send(ctx context.Context, token string, envelope apppush.Envelo
 	body := map[string]any{
 		"message": map[string]any{
 			"token": token,
-			"data":  apppush.EnvelopeData(envelope),
+			"notification": map[string]any{
+				"title": notificationTitle(envelope),
+				"body":  notificationBody(envelope),
+			},
+			"data": apppush.EnvelopeData(envelope),
 			"android": map[string]any{
 				"priority": "high",
+				"notification": map[string]any{
+					"channel_id": defaultChannelID,
+				},
 			},
 		},
 	}
@@ -108,4 +116,34 @@ func (c *Client) Send(ctx context.Context, token string, envelope apppush.Envelo
 	}
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 	return fmt.Errorf("fcm send failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+}
+
+func notificationTitle(envelope apppush.Envelope) string {
+	title := strings.TrimSpace(envelope.SafePayload.Title)
+	if title != "" {
+		return title
+	}
+	switch envelope.Kind {
+	case apppush.KindMessage:
+		return "New message"
+	case apppush.KindFriendRequest:
+		return "New activity"
+	default:
+		return "SGTP"
+	}
+}
+
+func notificationBody(envelope apppush.Envelope) string {
+	body := strings.TrimSpace(envelope.SafePayload.Subtitle)
+	if body != "" {
+		return body
+	}
+	switch envelope.Kind {
+	case apppush.KindMessage:
+		return "1 new message"
+	case apppush.KindFriendRequest:
+		return "Sent you a friend request"
+	default:
+		return "New notification"
+	}
 }
