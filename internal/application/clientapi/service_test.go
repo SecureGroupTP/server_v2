@@ -1005,8 +1005,8 @@ func TestServiceCoversRemainingRPCSuccessPaths(t *testing.T) {
 	}}); err != nil || response["recordedCount"] != 1 || len(store.keyPackages) != 1 || !store.keyPackages[0].IsLastResort {
 		t.Fatalf("upload key packages response=%#v records=%#v err=%v", response, store.keyPackages, err)
 	}
-	if string(store.welcomesDeletedForTarget) != string(user) {
-		t.Fatalf("expected welcomes to be invalidated for target user")
+	if len(store.welcomesDeletedForTarget) != 0 {
+		t.Fatalf("uploadKeyPackages must not invalidate stored welcomes; got target=%x", store.welcomesDeletedForTarget)
 	}
 	if response, err := service.FetchKeyPackages(context.Background(), [][]byte{peer}); err != nil || len(response["items"].([]map[string]any)) != 1 {
 		t.Fatalf("fetch key packages response=%#v err=%v", response, err)
